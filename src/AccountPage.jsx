@@ -1,21 +1,28 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Mail, Calendar, Key, Coins, ArrowLeft, LogOut, Cpu, SlidersHorizontal, Bot, Copy, Check } from 'lucide-react';
+import { User, Mail, Calendar, Key, Coins, ArrowLeft, Copy, Check } from 'lucide-react';
 import { api } from './api.js';
+import AppSidebar from './AppSidebar.jsx';
 
-const sidebarItems = [
-  { id: 'models', label: 'Модели', icon: Cpu },
-  { id: 'agents', label: 'Агенты', icon: Bot },
-  { id: 'account', label: 'Аккаунт', icon: User },
-  { id: 'settings', label: 'Настройки', icon: SlidersHorizontal },
-];
+const pageBg = 'var(--page-bg)';
+const panelBg = 'var(--panel-bg)';
+const softPanelBg = 'var(--soft-panel-bg)';
 
 export default function AccountPage() {
   const navigate = useNavigate();
   const [user, setUser] = useState(null);
   const [balance, setBalance] = useState(0);
-  const [sidebarActive] = useState('account');
   const [copied, setCopied] = useState(false);
+  const [telegramCode, setTelegramCode] = useState(null);
+  const [telegramLoading, setTelegramLoading] = useState(false);
+  const [telegramError, setTelegramError] = useState('');
+  const [topupAmount, setTopupAmount] = useState(500);
+  const [topupLoading, setTopupLoading] = useState(false);
+  const [topupError, setTopupError] = useState('');
+
+  const telegramQrUrl = telegramCode?.telegram_url
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=12&data=${encodeURIComponent(telegramCode.telegram_url)}`
+    : '';
 
   useEffect(() => {
     const session = JSON.parse(localStorage.getItem('velorix_session') || 'null');
@@ -37,99 +44,77 @@ export default function AccountPage() {
     }
   };
 
-  const handleLogout = async () => {
-    await api.logout().catch(() => {});
-    localStorage.removeItem('velorix_token');
-    localStorage.removeItem('velorix_session');
-    navigate('/');
+  const createTelegramCode = async () => {
+    setTelegramLoading(true);
+    setTelegramError('');
+    try {
+      const data = await api.getTelegramLinkCode();
+      setTelegramCode(data);
+    } catch (e) {
+      setTelegramError(e.message || 'Не удалось получить код');
+    } finally {
+      setTelegramLoading(false);
+    }
+  };
+
+  const handleTopup = async () => {
+    setTopupLoading(true);
+    setTopupError('');
+    try {
+      const payment = await api.createYookassaPayment(topupAmount);
+      if (!payment.confirmation_url) throw new Error('ЮKassa не вернула ссылку на оплату');
+      window.location.href = payment.confirmation_url;
+    } catch (e) {
+      setTopupError(e.message || 'Не удалось создать платеж');
+    } finally {
+      setTopupLoading(false);
+    }
   };
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#0a0a0a' }}>
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: pageBg }}>
         <div className="text-white/40 text-sm">Загрузка...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex" style={{ backgroundColor: '#0a0a0a' }}>
-      {/* Sidebar */}
-      <div
-        className="w-[200px] shrink-0 hidden md:flex flex-col pt-6 pb-4 px-3"
-        style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}
-      >
-        <button
-          onClick={() => navigate('/')}
-          className="text-white text-lg font-semibold tracking-tight mb-8 px-3 text-left hover:opacity-80 transition-opacity cursor-pointer"
-        >
-          JustRouter
-        </button>
-
-        <nav className="flex flex-col gap-1 flex-1">
-          {sidebarItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => {
-                if (item.id === 'models') navigate('/models');
-                if (item.id === 'agents') navigate('/agents');
-              }}
-              className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer text-left "
-              style={{
-                backgroundColor: sidebarActive === item.id ? 'rgba(255,255,255,0.08)' : 'transparent',
-                color: sidebarActive === item.id ? '#fff' : 'rgba(255,255,255,0.4)',
-              }}
-            >
-              <item.icon size={16} />
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        <div className="mt-auto pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 w-full text-left "
-            style={{ color: 'rgba(255,255,255,0.4)' }}
-          >
-            <LogOut size={16} />
-            Выйти
-          </button>
-        </div>
-      </div>
+    <div className="min-h-screen flex overflow-x-hidden" style={{ backgroundColor: pageBg }}>
+      <AppSidebar activeItem="account" />
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-h-screen">
+      <div className="flex-1 flex flex-col min-h-screen min-w-0 overflow-x-hidden">
         {/* Top bar */}
         <div
-          className="flex items-center justify-between px-4 sm:px-6 py-3"
+          className="flex items-center justify-between gap-3 px-4 sm:px-6 py-3 min-w-0"
           style={{
-            backgroundColor: 'rgba(0,0,0,0.85)',
+            backgroundColor: panelBg,
             backdropFilter: 'blur(12px)',
             borderBottom: '1px solid rgba(255,255,255,0.04)',
           }}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <button
               onClick={() => navigate('/models')}
               className="text-white/30 hover:text-white/60 transition-colors p-1 cursor-pointer"
             >
               <ArrowLeft size={18} />
             </button>
-            <span className="text-white text-lg font-semibold tracking-tight">Личный кабинет</span>
+            <span className="text-white text-lg font-semibold tracking-tight truncate">Личный кабинет</span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 shrink-0">
             <div
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium"
-              style={{ backgroundColor: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}
+              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-medium"
+              style={{ backgroundColor: softPanelBg, border: '1px solid rgba(255,255,255,0.08)' }}
             >
               <Coins size={13} style={{ color: '#F59E0B' }} />
-              <span className="text-white/70">{balance.toFixed(2)} ₽</span>
+              <span className="text-white/70 whitespace-nowrap">{balance.toFixed(2)} ₽</span>
             </div>
             <button
               onClick={() => navigate('/')}
-              className="text-xs font-medium px-3 py-1.5 rounded-full text-white/80 hover:text-white transition-all duration-200 cursor-pointer "
+              className="hidden xs:inline-flex text-xs font-medium px-3 py-1.5 rounded-full text-white/80 hover:text-white transition-all duration-200 cursor-pointer whitespace-nowrap"
             >
               На главную
             </button>
@@ -137,20 +122,20 @@ export default function AccountPage() {
         </div>
 
         {/* Account info */}
-        <div className="flex-1 p-4 sm:p-6 max-w-2xl mx-auto w-full">
+        <div className="flex-1 p-4 sm:p-6 max-w-2xl mx-auto w-full min-w-0 overflow-x-hidden">
           <div className="space-y-4">
             {/* Profile card */}
             <div
               className="rounded-2xl p-6"
               style={{
-                backgroundColor: 'rgba(255,255,255,0.02)',
+                backgroundColor: softPanelBg,
                 border: '1px solid rgba(255,255,255,0.06)',
               }}
             >
               <h2 className="text-white text-base font-semibold mb-5">Профиль</h2>
 
               <div className="space-y-4">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0">
                   <div
                     className="size-10 rounded-xl flex items-center justify-center"
                     style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}
@@ -196,11 +181,11 @@ export default function AccountPage() {
                   >
                     <Key size={18} className="text-white/40" />
                   </div>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <div className="text-white/40 text-[10px] font-mono uppercase tracking-wider mb-0.5">Единый API-ключ</div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
                       <code
-                        className="text-white text-xs font-mono px-3 py-1.5 rounded-lg flex-1 truncate"
+                        className="text-white text-xs font-mono px-3 py-1.5 rounded-lg flex-1 min-w-0 truncate block"
                         style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
                       >
                         {user.api_key || '—'}
@@ -228,11 +213,78 @@ export default function AccountPage() {
               </div>
             </div>
 
+            {/* Telegram card */}
+            <div
+              className="rounded-2xl p-6"
+              style={{
+                backgroundColor: softPanelBg,
+                border: '1px solid rgba(255,255,255,0.06)',
+              }}
+            >
+              <h2 className="text-white text-base font-semibold mb-5">Telegram бот</h2>
+              <div className="flex flex-col sm:flex-row items-start gap-4 min-w-0">
+                <div
+                  className="size-12 rounded-2xl flex items-center justify-center shrink-0"
+                  style={{ backgroundColor: 'rgba(59,130,246,0.1)' }}
+                >
+                  <Bot size={24} style={{ color: '#60A5FA' }} />
+                </div>
+                <div className="flex-1 min-w-0 w-full">
+                  <div className="text-white/70 text-sm leading-6">
+                    Подключите аккаунт к боту, чтобы смотреть баланс, получать API-ключ, пополнять счет и уведомления о низком балансе.
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={createTelegramCode}
+                      disabled={telegramLoading}
+                      className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 disabled:opacity-50"
+                      style={{ backgroundColor: 'rgba(59,130,246,0.14)', color: '#BFDBFE' }}
+                    >
+                      {telegramLoading ? 'Генерация...' : 'Получить код'}
+                    </button>
+                    {telegramError && <span className="text-red-300 text-xs">{telegramError}</span>}
+                  </div>
+                  {telegramCode && (
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-4">
+                      <div
+                        className="rounded-2xl p-3 flex items-center justify-center"
+                        style={{ backgroundColor: 'rgba(255,255,255,0.92)' }}
+                      >
+                        <img src={telegramQrUrl} alt="QR-код для подключения Telegram-бота" className="size-[180px]" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-white/40 text-[10px] font-mono uppercase tracking-wider mb-1">Команда для бота</div>
+                        <code
+                          className="block text-white text-xs font-mono px-3 py-2 rounded-lg truncate"
+                          style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+                        >
+                          {telegramCode.command}
+                        </code>
+                        <div className="text-white/25 text-[10px] font-mono mt-1">Код действует {telegramCode.expires_in_minutes} минут</div>
+                        <a
+                          href={telegramCode.telegram_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-3 inline-flex items-center justify-center px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 hover:opacity-85"
+                          style={{ backgroundColor: 'rgba(59,130,246,0.14)', color: '#BFDBFE' }}
+                        >
+                          Открыть Telegram
+                        </a>
+                        <p className="mt-2 text-white/35 text-xs leading-5">
+                          Отсканируйте QR-код телефоном или откройте ссылку, чтобы бот получил код подключения автоматически.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Balance card */}
             <div
               className="rounded-2xl p-6"
               style={{
-                backgroundColor: 'rgba(255,255,255,0.02)',
+                backgroundColor: softPanelBg,
                 border: '1px solid rgba(255,255,255,0.06)',
               }}
             >
@@ -249,13 +301,34 @@ export default function AccountPage() {
                   <div className="text-white/30 text-xs font-mono mt-0.5">RUB</div>
                 </div>
               </div>
+              <div className="mt-5 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+                <input
+                  type="number"
+                  min="10"
+                  step="50"
+                  value={topupAmount}
+                  onChange={(e) => setTopupAmount(e.target.value)}
+                  className="w-full rounded-xl px-4 py-2.5 text-white text-sm outline-none"
+                  style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+                  placeholder="Сумма пополнения"
+                />
+                <button
+                  onClick={handleTopup}
+                  disabled={topupLoading}
+                  className="px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 disabled:opacity-50"
+                  style={{ backgroundColor: 'rgba(245,158,11,0.14)', color: '#FDE68A' }}
+                >
+                  {topupLoading ? 'Создаём...' : 'Пополнить через ЮKassa'}
+                </button>
+              </div>
+              {topupError && <div className="mt-2 text-red-300 text-xs">{topupError}</div>}
             </div>
 
             {/* Quick actions */}
             <div
               className="rounded-2xl p-6"
               style={{
-                backgroundColor: 'rgba(255,255,255,0.02)',
+                backgroundColor: softPanelBg,
                 border: '1px solid rgba(255,255,255,0.06)',
               }}
             >

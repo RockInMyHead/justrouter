@@ -13,8 +13,11 @@ async function request(url, options = {}) {
 
 export const api = {
   // Auth
-  register: (email, password, name) =>
-    request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password, name }) }),
+  register: (email, password, name, marketing_enabled = true) =>
+    request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password, name, marketing_enabled }) }),
+
+  verifyEmail: (email, code) =>
+    request('/auth/verify-email', { method: 'POST', body: JSON.stringify({ email, code }) }),
 
   login: (email, password) =>
     request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
@@ -22,6 +25,11 @@ export const api = {
   logout: () => request('/auth/logout', { method: 'POST' }),
 
   me: () => request('/auth/me'),
+
+  getTelegramLinkCode: () => request('/telegram/link-code', { method: 'POST' }),
+
+  createYookassaPayment: (amount) =>
+    request('/billing/yookassa/payment', { method: 'POST', body: JSON.stringify({ amount }) }),
 
   // Models
   getModels: (params = {}) => {

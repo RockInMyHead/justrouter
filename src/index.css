@@ -1,9 +1,76 @@
 @import "tailwindcss";
 
+:root {
+  --page-bg: #2f2f2f;
+  --surface-bg: #3a3a3a;
+  --panel-bg: rgba(58, 58, 58, 0.94);
+  --soft-panel-bg: rgba(247, 241, 232, 0.08);
+  --milk: #f7f1e8;
+  --milk-soft: rgba(247, 241, 232, 0.82);
+  --milk-muted: rgba(247, 241, 232, 0.72);
+  --gray-text: #6f6f6f;
+}
+
+body.light-theme {
+  --page-bg: #f7f1e8;
+  --surface-bg: #fffaf2;
+  --panel-bg: rgba(255, 250, 242, 0.92);
+  --soft-panel-bg: rgba(111, 111, 111, 0.08);
+  --milk: #5f5f5f;
+  --milk-soft: rgba(95, 95, 95, 0.88);
+  --milk-muted: rgba(95, 95, 95, 0.74);
+  --gray-text: #767676;
+}
+
 body {
   font-family: "Inter", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #0a0a0a;
-  color: #fff;
+  background: var(--page-bg);
+  color: var(--milk);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.text-white,
+[class*="text-white/"] {
+  color: var(--milk) !important;
+}
+
+.text-black {
+  color: var(--gray-text) !important;
+}
+
+.bg-white {
+  background-color: var(--milk) !important;
+}
+
+.bg-black {
+  background-color: var(--surface-bg) !important;
+}
+
+.placeholder-white\/20::placeholder {
+  color: var(--milk-muted) !important;
+}
+
+body.justrouter-home [class*="support" i],
+body.justrouter-home [id*="support" i],
+body.justrouter-home [aria-label*="support" i],
+body.justrouter-home [title*="support" i],
+body.justrouter-home [class*="chat-widget" i],
+body.justrouter-home [id*="chat-widget" i],
+body.justrouter-home [aria-label*="chat" i],
+body.justrouter-home [title*="chat" i],
+body.justrouter-home [aria-label*="чат" i],
+body.justrouter-home [title*="чат" i],
+body.justrouter-home [class*="help-widget" i],
+body.justrouter-home [id*="help-widget" i],
+body.justrouter-home [class*="jivo" i],
+body.justrouter-home [id*="jivo" i],
+body.justrouter-home [class*="tawk" i],
+body.justrouter-home [id*="tawk" i],
+body.justrouter-home [class*="crisp" i],
+body.justrouter-home [id*="crisp" i],
+body.justrouter-home [class*="intercom" i],
+body.justrouter-home [id*="intercom" i] {
+  display: none !important;
 }

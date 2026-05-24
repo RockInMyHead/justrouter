@@ -1,11 +1,22 @@
-import { ArrowRight, Menu, X, Zap, Cpu, Network, Globe, Layers, Shield, TrendingUp, CheckCircle, Mail, Lock, User, X as XIcon, Bot, Coins } from 'lucide-react';
+import { ArrowRight, Menu, X, Zap, Cpu, Network, Globe, Layers, Shield, TrendingUp, CheckCircle, Mail, Lock, User, X as XIcon, Coins } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from './api.js';
 
 const BG_VIDEO = "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260508_155101_f2540600-6fe9-433e-8e48-b3f4b72f0727.mp4";
 
-const NAV_ITEMS = ['Платформа', 'Как работает', 'AI Security', 'Интеграции', 'Аналитика'];
+const NAV_ITEMS = [
+  { label: 'Модели', path: '/models' },
+  { label: 'Личный кабинет', path: '/account' },
+  { label: 'Агенты', path: '/agents' },
+  { label: 'API', path: '/api-docs' },
+  { label: 'Документы', path: '/legal' },
+];
+
+const pageBg = 'var(--page-bg)';
+const surfaceBg = 'var(--surface-bg)';
+const panelBg = 'var(--panel-bg)';
+const softPanelBg = 'var(--soft-panel-bg)';
 
 function HamburgerButton({ open, onClick }) {
   return (
@@ -47,20 +58,24 @@ function MobileMenu({ open, onClose, onLoginClick, onRegisterClick, userName, on
       <div
         className="fixed top-0 left-0 right-0 z-40 lg:hidden overflow-hidden"
         style={{
-          maxHeight: open ? '420px' : '0px',
+          maxHeight: open ? 'min(100dvh, 640px)' : '0px',
           transition: 'max-height 0.5s cubic-bezier(0.23, 1, 0.32, 1)',
         }}
       >
         <div
-          className="pt-20 pb-6 px-5"
-          style={{ backgroundColor: 'rgba(8,8,8,0.97)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}
+          className="pt-20 pb-6 px-5 overflow-y-auto"
+          style={{
+            backgroundColor: panelBg,
+            borderBottom: '1px solid rgba(255,255,255,0.08)',
+            maxHeight: 'min(100dvh, 640px)',
+            paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom))',
+          }}
         >
           <div className="flex flex-col gap-1">
             {NAV_ITEMS.map((item, i) => (
-              <a
-                key={item}
-                href={`#${item.toLowerCase().replace(/\s+/g, '-')}`}
-                onClick={(e) => { e.preventDefault(); document.getElementById(item.toLowerCase().replace(/\s+/g, '-'))?.scrollIntoView({ behavior: 'smooth' }); onClose(); }}
+              <button
+                key={item.path}
+                onClick={() => { navigate(item.path); onClose(); }}
                 className="text-white/70 hover:text-white text-base py-3 px-3 rounded-xl hover:bg-white/5 transition-all duration-200 flex items-center justify-between group"
                 style={{
                   fontFamily: 'Inter, sans-serif',
@@ -70,27 +85,10 @@ function MobileMenu({ open, onClose, onLoginClick, onRegisterClick, userName, on
                   transition: `opacity 0.4s cubic-bezier(0.23,1,0.32,1) ${i * 50 + 80}ms, transform 0.4s cubic-bezier(0.23,1,0.32,1) ${i * 50 + 80}ms, color 0.2s, background 0.2s`,
                 }}
               >
-                {item}
+                {item.label}
                 <ArrowRight size={14} className="opacity-0 group-hover:opacity-40 -translate-x-1 group-hover:translate-x-0 transition-all duration-200" />
-              </a>
+              </button>
             ))}
-            {/* <button
-              onClick={() => { navigate('/agents'); onClose(); }}
-              className="text-white/70 hover:text-white text-base py-3 px-3 rounded-xl hover:bg-white/5 transition-all duration-200 flex items-center justify-between group"
-              style={{
-                fontFamily: 'Inter, sans-serif',
-                transitionDelay: open ? `${NAV_ITEMS.length * 50 + 80}ms` : '0ms',
-                opacity: open ? 1 : 0,
-                transform: open ? 'translateY(0)' : 'translateY(-8px)',
-                transition: `opacity 0.4s cubic-bezier(0.23,1,0.32,1) ${NAV_ITEMS.length * 50 + 80}ms, transform 0.4s cubic-bezier(0.23,1,0.32,1) ${NAV_ITEMS.length * 50 + 80}ms, color 0.2s, background 0.2s`,
-              }}
-            >
-              <div className="flex items-center gap-2">
-                <Bot size={16} />
-                Агенты
-              </div>
-              <ArrowRight size={14} className="opacity-0 group-hover:opacity-40 -translate-x-1 group-hover:translate-x-0 transition-all duration-200" />
-            </button> */}
           </div>
           <div
             className="mt-5 pt-5"
@@ -106,7 +104,7 @@ function MobileMenu({ open, onClose, onLoginClick, onRegisterClick, userName, on
               <div className="flex flex-col gap-2">
                 <div
                   className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium"
-                  style={{ backgroundColor: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}
+                  style={{ backgroundColor: softPanelBg, border: '1px solid rgba(255,255,255,0.08)' }}
                 >
                   <Coins size={13} style={{ color: '#F59E0B' }} />
                   <span className="text-white/70">{balance.toFixed(2)} ₽</span>
@@ -180,25 +178,17 @@ function Navbar({ onLoginClick, onRegisterClick, userName, onLogout, balance }) 
         <span className="text-white text-xl font-semibold tracking-tight" style={{ fontFamily: 'Inter, sans-serif' }}>
           JustRouter
         </span>
-        <div className="hidden lg:flex items-center gap-1 rounded-full px-2 py-1.5" style={{ backgroundColor: scrolled ? 'rgba(255,255,255,0.05)' : '#0C0C0C' }}>
+        <div className="hidden lg:flex items-center gap-1 rounded-full px-2 py-1.5" style={{ backgroundColor: scrolled ? softPanelBg : surfaceBg }}>
           {NAV_ITEMS.map((item) => (
-            <a
-              key={item}
-              href={`#${item.toLowerCase().replace(/\s+/g, '-')}`}
+            <button
+              key={item.path}
+              onClick={() => navigate(item.path)}
               className="text-white/80 hover:text-white text-sm px-4 py-1.5 rounded-full hover:bg-white/10 transition-all duration-200"
               style={{ fontFamily: 'Inter, sans-serif' }}
             >
-              {item}
-            </a>
+              {item.label}
+            </button>
           ))}
-          <button
-            onClick={() => navigate('/agents')}
-            className="inline-flex items-center gap-1.5 text-white/80 hover:text-white text-sm px-4 py-1.5 rounded-full hover:bg-white/10 transition-all duration-200 cursor-pointer "
-            style={{ fontFamily: 'Inter, sans-serif' }}
-          >
-            <Bot size={14} />
-            Агенты
-          </button>
         </div>
         <div className="flex items-center gap-2">
           <HamburgerButton open={open} onClick={() => setOpen((v) => !v)} />
@@ -207,7 +197,7 @@ function Navbar({ onLoginClick, onRegisterClick, userName, onLogout, balance }) 
               <div className="flex items-center gap-3">
                 <div
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium"
-                  style={{ backgroundColor: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}
+                  style={{ backgroundColor: softPanelBg, border: '1px solid rgba(255,255,255,0.08)' }}
                 >
                   <Coins size={13} style={{ color: '#F59E0B' }} />
                   <span className="text-white/70">{balance.toFixed(2)} ₽</span>
@@ -302,10 +292,10 @@ function PlatformSection() {
   ];
 
   return (
-    <section id="платформа" className="relative py-24 md:py-32 px-5 sm:px-8" style={{ backgroundColor: '#0a0a0a' }}>
+    <section id="платформа" className="relative py-24 md:py-32 px-5 sm:px-8" style={{ backgroundColor: pageBg }}>
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-16 md:mb-20">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium mb-4" style={{ backgroundColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium mb-4" style={{ backgroundColor: softPanelBg, color: 'var(--milk-muted)', border: '1px solid rgba(255,255,255,0.08)' }}>
             <Zap size={12} />
             Platform
           </div>
@@ -323,7 +313,7 @@ function PlatformSection() {
               key={i}
               className="group rounded-2xl p-6 transition-all duration-300 hover:-translate-y-1"
               style={{
-                backgroundColor: 'rgba(255,255,255,0.02)',
+                backgroundColor: softPanelBg,
                 border: '1px solid rgba(255,255,255,0.06)',
               }}
             >
@@ -378,10 +368,10 @@ function HowItWorksSection() {
   ];
 
   return (
-    <section id="как-работает" className="relative py-24 md:py-32 px-5 sm:px-8" style={{ backgroundColor: '#0a0a0a' }}>
+    <section id="как-работает" className="relative py-24 md:py-32 px-5 sm:px-8" style={{ backgroundColor: pageBg }}>
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-16 md:mb-20">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium mb-4" style={{ backgroundColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium mb-4" style={{ backgroundColor: softPanelBg, color: 'var(--milk-muted)', border: '1px solid rgba(255,255,255,0.08)' }}>
             <Network size={12} />
             How it works
           </div>
@@ -400,7 +390,7 @@ function HowItWorksSection() {
               <div
                 className="relative rounded-2xl p-6 h-full transition-all duration-300 hover:-translate-y-1"
                 style={{
-                  backgroundColor: 'rgba(255,255,255,0.02)',
+                  backgroundColor: softPanelBg,
                   border: '1px solid rgba(255,255,255,0.06)',
                 }}
               >
@@ -435,7 +425,7 @@ function HowItWorksSection() {
         <div
           className="mt-12 rounded-2xl p-5 md:p-6 font-mono text-xs md:text-sm leading-relaxed"
           style={{
-            backgroundColor: 'rgba(255,255,255,0.02)',
+            backgroundColor: softPanelBg,
             border: '1px solid rgba(255,255,255,0.06)',
           }}
         >
@@ -474,6 +464,12 @@ function AuthModal({ mode, onClose, onSuccess }) {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [acceptedOffer, setAcceptedOffer] = useState(false);
+  const [acceptedPersonalData, setAcceptedPersonalData] = useState(false);
+  const [acceptedMarketing, setAcceptedMarketing] = useState(true);
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [registrationSuccess, setRegistrationSuccess] = useState(null);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -490,12 +486,48 @@ function AuthModal({ mode, onClose, onSuccess }) {
       return;
     }
 
+    if (!isLogin && (!acceptedOffer || !acceptedPersonalData)) {
+      setError('Примите обязательные условия регистрации');
+      return;
+    }
+
     setLoading(true);
     try {
-      const result = isLogin
-        ? await api.login(email, password)
-        : await api.register(email, password, name);
+      if (!isLogin) {
+        const result = await api.register(email, password, name, acceptedMarketing);
+        setVerificationEmail(result.email || email);
+        setVerificationCode('');
+        setError('');
+        return;
+      }
 
+      const result = await api.login(email, password);
+
+      localStorage.setItem('velorix_token', result.token);
+      localStorage.setItem('velorix_session', JSON.stringify(result.user));
+      onSuccess(result.user.name);
+      setRegistrationSuccess(result.user);
+      setVerificationEmail('');
+      setVerificationCode('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyEmail = async (e) => {
+    e.preventDefault();
+    setError('');
+
+    if (!verificationCode.trim()) {
+      setError('Введите код подтверждения');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await api.verifyEmail(verificationEmail, verificationCode);
       localStorage.setItem('velorix_token', result.token);
       localStorage.setItem('velorix_session', JSON.stringify(result.user));
       onSuccess(result.user.name);
@@ -519,7 +551,7 @@ function AuthModal({ mode, onClose, onSuccess }) {
       <div
         className="w-full max-w-sm rounded-2xl p-6 sm:p-8"
         style={{
-          backgroundColor: '#0a0a0a',
+          backgroundColor: panelBg,
           border: '1px solid rgba(255,255,255,0.08)',
         }}
         onClick={(e) => e.stopPropagation()}
@@ -533,6 +565,71 @@ function AuthModal({ mode, onClose, onSuccess }) {
           </button>
         </div>
 
+        {registrationSuccess ? (
+          <div className="text-center">
+            <div
+              className="size-14 rounded-2xl flex items-center justify-center mx-auto mb-5"
+              style={{ backgroundColor: 'rgba(16,185,129,0.14)', border: '1px solid rgba(16,185,129,0.22)' }}
+            >
+              <CheckCircle size={28} style={{ color: '#10B981' }} />
+            </div>
+            <h3 className="text-white text-xl font-semibold mb-2">Аккаунт создан</h3>
+            <p className="text-white/55 text-sm leading-relaxed mb-6">
+              Email подтверждён, регистрация завершена. Теперь вы можете получить API-ключ, выбрать модель и начать подключение.
+            </p>
+            <div className="space-y-2">
+              <button
+                onClick={() => { onClose(); navigate('/account'); }}
+                className="w-full py-3 rounded-xl bg-white text-black text-sm font-medium hover:opacity-80 transition-all duration-200"
+              >
+                Перейти в личный кабинет
+              </button>
+              <button
+                onClick={() => { onClose(); navigate('/models'); }}
+                className="w-full py-3 rounded-xl text-white/80 text-sm font-medium transition-all duration-200 border border-white/10 hover:border-white/30"
+              >
+                Выбрать модель
+              </button>
+            </div>
+          </div>
+        ) : verificationEmail ? (
+          <form onSubmit={handleVerifyEmail} className="space-y-3.5">
+            <p className="text-white/60 text-sm leading-relaxed">
+              Мы отправили код подтверждения на <span className="text-white">{verificationEmail}</span>.
+            </p>
+            <div>
+              <label className="block text-white/40 text-xs font-mono mb-1 ml-1">Код подтверждения</label>
+              <input
+                type="text"
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="123456"
+                className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/20 outline-none focus:border-white/30 transition-all font-mono tracking-[0.35em] text-center"
+              />
+            </div>
+
+            {error && (
+              <div className="text-red-400/80 text-xs font-mono text-center bg-red-500/5 border border-red-500/10 rounded-xl px-4 py-2">
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 rounded-xl bg-white text-black text-sm font-medium hover:opacity-80 transition-all duration-200 disabled:opacity-50 "
+            >
+              {loading ? 'Проверяем...' : 'Подтвердить email'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setVerificationEmail(''); setVerificationCode(''); setError(''); }}
+              className="w-full text-white/40 hover:text-white/70 text-xs font-mono transition-colors"
+            >
+              Изменить данные регистрации
+            </button>
+          </form>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-3.5">
           {!isLogin && (
             <div>
@@ -578,6 +675,60 @@ function AuthModal({ mode, onClose, onSuccess }) {
             </div>
           </div>
 
+          {!isLogin && (
+            <div
+              className="rounded-xl px-4 py-3"
+              style={{
+                backgroundColor: softPanelBg,
+                border: '1px solid rgba(255,255,255,0.1)',
+              }}
+            >
+              <label className="flex items-start gap-2.5 text-xs leading-5 text-white/70 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={acceptedOffer}
+                  onChange={(e) => setAcceptedOffer(e.target.checked)}
+                  className="mt-1 size-3.5 accent-white"
+                />
+                <span>
+                  Принимаю условия{' '}
+                  <a href="/legal/offer" target="_blank" rel="noreferrer" className="text-white hover:text-white/80 underline underline-offset-2">
+                    Публичной оферты
+                  </a>
+                </span>
+              </label>
+
+              <label className="mt-2.5 flex items-start gap-2.5 text-xs leading-5 text-white/70 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={acceptedPersonalData}
+                  onChange={(e) => setAcceptedPersonalData(e.target.checked)}
+                  className="mt-1 size-3.5 accent-white"
+                />
+                <span>
+                  Даю{' '}
+                  <a href="/legal/personal-data-consent" target="_blank" rel="noreferrer" className="text-white hover:text-white/80 underline underline-offset-2">
+                    Согласие на обработку персональных данных
+                  </a>
+                  {' '}в соответствии с{' '}
+                  <a href="/legal/privacy" target="_blank" rel="noreferrer" className="text-white hover:text-white/80 underline underline-offset-2">
+                    Политикой конфиденциальности
+                  </a>
+                </span>
+              </label>
+
+              <label className="mt-2.5 flex items-start gap-2.5 text-xs leading-5 text-white/70 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={acceptedMarketing}
+                  onChange={(e) => setAcceptedMarketing(e.target.checked)}
+                  className="mt-1 size-3.5 accent-white"
+                />
+                <span>Согласен на получение рекламных материалов</span>
+              </label>
+            </div>
+          )}
+
           {error && (
             <div className="text-red-400/80 text-xs font-mono text-center bg-red-500/5 border border-red-500/10 rounded-xl px-4 py-2">
               {error}
@@ -589,18 +740,21 @@ function AuthModal({ mode, onClose, onSuccess }) {
             disabled={loading}
             className="w-full py-2.5 rounded-xl bg-white text-black text-sm font-medium hover:opacity-80 transition-all duration-200 disabled:opacity-50 "
           >
-            {loading ? 'Загрузка...' : (isLogin ? 'Войти' : 'Создать аккаунт')}
+            {loading ? 'Загрузка...' : (isLogin ? 'Войти' : 'Получить код')}
           </button>
         </form>
+        )}
 
+        {!verificationEmail && (
         <div className="mt-4 text-center">
           <button
-            onClick={() => { setIsLogin(!isLogin); setError(''); }}
+            onClick={() => { setIsLogin(!isLogin); setError(''); setVerificationEmail(''); }}
             className="text-white/30 hover:text-white/60 text-xs font-mono transition-colors"
           >
             {isLogin ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
           </button>
         </div>
+        )}
 
         <div className="mt-3 text-center">
           <button
@@ -616,16 +770,47 @@ function AuthModal({ mode, onClose, onSuccess }) {
 }
 
 function Footer() {
+  const legalLinks = [
+    { href: '/legal/offer', label: 'Публичная оферта' },
+    { href: '/legal/privacy', label: 'Политика конфиденциальности' },
+    { href: '/legal/cookies', label: 'Политика Cookie' },
+    { href: '/legal/personal-data-consent', label: 'Согласие на обработку персональных данных' },
+  ];
+
   return (
-    <footer style={{ backgroundColor: '#0a0a0a', borderTop: '1px solid rgba(255,255,255,0.06)' }} className="py-12 px-5 sm:px-8">
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
-        <span className="text-white/20 text-xs">© 2026 JustRouter. Один API для всех AI-моделей.</span>
-        <div className="flex gap-4">
-          <a href="/agents" className="text-white/30 hover:text-white/60 text-xs transition-colors">Агенты</a>
-          <a href="/api-docs" className="text-white/30 hover:text-white/60 text-xs transition-colors">API для агентов</a>
-          <a href="#" className="text-white/30 hover:text-white/60 text-xs transition-colors">Документация</a>
-          <a href="#" className="text-white/30 hover:text-white/60 text-xs transition-colors">Telegram</a>
-          <a href="#" className="text-white/30 hover:text-white/60 text-xs transition-colors">Статус</a>
+    <footer style={{ backgroundColor: pageBg, borderTop: '1px solid rgba(255,255,255,0.06)' }} className="py-12 px-5 sm:px-8">
+      <div className="max-w-7xl mx-auto flex flex-col gap-6">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+          <span className="text-white/20 text-xs">© 2026 JustRouter. Один API для всех AI-моделей.</span>
+          <div className="flex flex-wrap justify-center gap-4">
+            <a href="/agents" className="text-white/30 hover:text-white/60 text-xs transition-colors">Агенты</a>
+            <a href="/api-docs" className="text-white/30 hover:text-white/60 text-xs transition-colors">API для агентов</a>
+            <a href="#" className="text-white/30 hover:text-white/60 text-xs transition-colors">Документация</a>
+            <a href="#" className="text-white/30 hover:text-white/60 text-xs transition-colors">Telegram</a>
+            <a href="#" className="text-white/30 hover:text-white/60 text-xs transition-colors">Статус</a>
+          </div>
+        </div>
+
+        <div
+          className="rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-center gap-3 sm:gap-6 text-center"
+          style={{ backgroundColor: softPanelBg, border: '1px solid rgba(255,255,255,0.08)' }}
+        >
+          <span className="text-white/70 text-sm font-medium">ИП Афонькин Д.П.</span>
+          <span className="text-white/40 text-xs font-mono">ИНН: 771412230143</span>
+          <span className="text-white/40 text-xs font-mono">ОГРНИП: 324774600620948</span>
+          <a href="mailto:info@justrouter.ru" className="text-white/50 hover:text-white text-xs font-mono transition-colors">info@justrouter.ru</a>
+          <a href="mailto:support@justrouter.ru" className="text-white/50 hover:text-white text-xs font-mono transition-colors">support@justrouter.ru</a>
+        </div>
+
+        <div className="flex flex-col items-center gap-3 pt-5" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <span className="text-white/20 text-[10px] uppercase tracking-[0.2em]">Правовые документы</span>
+          <div className="flex flex-wrap justify-center gap-x-4 gap-y-2">
+            {legalLinks.map((link) => (
+              <a key={link.href} href={link.href} className="text-white/30 hover:text-white/60 text-xs transition-colors">
+                {link.label}
+              </a>
+            ))}
+          </div>
         </div>
       </div>
     </footer>
@@ -638,6 +823,44 @@ export default function App() {
   const [balance, setBalance] = useState(0);
 
   useEffect(() => {
+    document.body.classList.add('justrouter-home');
+
+    const hideSupportChat = () => {
+      const chatTextMarkers = ['Чат техподдержки', 'Ваш вопрос'];
+      const candidates = Array.from(document.body.querySelectorAll('body *'));
+
+      for (const element of candidates) {
+        const text = element.textContent || '';
+        if (!chatTextMarkers.some((marker) => text.includes(marker))) continue;
+
+        let target = element;
+        let parent = element.parentElement;
+        while (parent && parent !== document.body) {
+          const style = window.getComputedStyle(parent);
+          if (style.position === 'fixed') {
+            target = parent;
+          }
+          parent = parent.parentElement;
+        }
+
+        target.style.display = 'none';
+      }
+    };
+
+    hideSupportChat();
+    const observer = new MutationObserver(hideSupportChat);
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+      document.body.classList.remove('justrouter-home');
+    };
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.remove('light-theme');
+    localStorage.removeItem('justrouter_theme');
+
     const session = JSON.parse(localStorage.getItem('velorix_session') || 'null');
     if (session) {
       setUserName(session.name);
@@ -669,7 +892,7 @@ export default function App() {
   };
 
   return (
-    <div style={{ fontFamily: 'Inter, sans-serif', backgroundColor: '#0a0a0a' }}>
+    <div style={{ fontFamily: 'Inter, sans-serif', backgroundColor: pageBg }}>
       {authModal && (
         <AuthModal
           mode={authModal}
@@ -750,9 +973,9 @@ export default function App() {
       <HowItWorksSection />
 
       {/* AI Defense Section placeholder */}
-      <section id="ai-security" className="relative py-24 md:py-32 px-5 sm:px-8" style={{ backgroundColor: '#0a0a0a' }}>
+      <section id="ai-security" className="relative py-24 md:py-32 px-5 sm:px-8" style={{ backgroundColor: pageBg }}>
         <div className="max-w-7xl mx-auto text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium mb-4" style={{ backgroundColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium mb-4" style={{ backgroundColor: softPanelBg, color: 'var(--milk-muted)', border: '1px solid rgba(255,255,255,0.08)' }}>
             <Shield size={12} />
             AI Security
           </div>
