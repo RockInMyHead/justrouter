@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" fill="none">
+  <rect width="400" height="300" fill="#000"/>
+  <ellipse cx="120" cy="60" rx="100" ry="80" fill="#1e3a8a" opacity="0.25"/>
+  <ellipse cx="300" cy="240" rx="90" ry="70" fill="#312e81" opacity="0.25"/>
+  <circle cx="32" cy="28" r="8" stroke="white" stroke-width="1.5" fill="none"/>
+  <line x1="32" y1="20" x2="32" y2="14" stroke="white" stroke-width="1.5"/>
+  <line x1="32" y1="36" x2="32" y2="42" stroke="white" stroke-width="1.5"/>
+  <line x1="24" y1="28" x2="18" y2="28" stroke="white" stroke-width="1.5"/>
+  <line x1="40" y1="28" x2="46" y2="28" stroke="white" stroke-width="1.5"/>
+  <rect x="320" y="22" width="64" height="20" rx="10" fill="white"/>
+  <text x="200" y="108" text-anchor="middle" fill="white" opacity="0.9" font-family="Georgia,serif" font-size="14" font-style="italic">Design at the speed of thought</text>
+  <text x="200" y="155" text-anchor="middle" fill="url(#grad)" font-family="system-ui,sans-serif" font-size="36" font-weight="600">Build Faster</text>
+  <defs>
+    <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset="1" stop-color="#b4c0ff"/>
+    </linearGradient>
+  </defs>
+  <text x="200" y="185" text-anchor="middle" fill="white" opacity="0.5" font-family="system-ui,sans-serif" font-size="9">SEO-optimized websites in seconds</text>
+  <rect x="130" y="210" width="140" height="28" rx="14" fill="white"/>
+  <circle cx="252" cy="224" r="12" fill="#3054ff"/>
+</svg>

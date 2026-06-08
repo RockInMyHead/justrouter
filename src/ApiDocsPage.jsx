@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Copy, Check, Bot, Key, CreditCard, MessageSquare, List, User, ExternalLink, BookOpen, Globe } from 'lucide-react';
 
@@ -251,8 +251,14 @@ function EndpointCard({ ep, index }) {
   );
 }
 
-export default function ApiDocsPage() {
+export default function ApiDocsPage({ quickstart = false }) {
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (quickstart) {
+      document.getElementById('quickstart')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [quickstart]);
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#0a0a0a' }}>
@@ -273,7 +279,7 @@ export default function ApiDocsPage() {
             >
               <ArrowLeft size={18} />
             </button>
-            <span className="text-white text-lg font-semibold tracking-tight">API для агентов</span>
+            <span className="text-white text-lg font-semibold tracking-tight">Документация API</span>
           </div>
           <button
             onClick={() => navigate('/')}
@@ -295,8 +301,8 @@ export default function ApiDocsPage() {
               <Bot size={20} style={{ color: '#8B5CF6' }} />
             </div>
             <div>
-              <h1 className="text-white text-xl font-semibold">API JustRouter</h1>
-              <p className="text-white/30 text-xs font-mono mt-0.5">Единый API для всех моделей · v1</p>
+              <h1 className="text-white text-xl font-semibold">Документация API JustRouter</h1>
+              <p className="text-white/30 text-xs font-mono mt-0.5">Быстрый старт за 5 минут · v1</p>
             </div>
           </div>
 
@@ -328,7 +334,7 @@ export default function ApiDocsPage() {
         </div>
 
         {/* Quick start */}
-        <div className="mb-10">
+        <div id="quickstart" className="mb-10 scroll-mt-24">
           <h2 className="text-white text-base font-semibold mb-4 flex items-center gap-2">
             <BookOpen size={16} style={{ color: 'rgba(255,255,255,0.3)' }} />
             Быстрый старт

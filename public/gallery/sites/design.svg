@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" fill="none">
+  <rect width="400" height="300" fill="#f4f4f2"/>
+  <rect width="400" height="300" fill="url(#wash)" opacity="0.6"/>
+  <defs>
+    <radialGradient id="wash" cx="100%" cy="0%" r="80%">
+      <stop offset="0%" stop-color="#fff"/>
+      <stop offset="100%" stop-color="#f4f4f2" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <text x="32" y="42" fill="#1a1e2d" font-family="system-ui,sans-serif" font-size="16" font-weight="700">Learnly<tspan fill="#fdb181">.</tspan></text>
+  <rect x="300" y="28" width="68" height="22" rx="11" fill="#1a1e2d"/>
+  <text x="334" y="43" text-anchor="middle" fill="#fff" font-family="system-ui,sans-serif" font-size="7">Try It Now</text>
+  <text x="32" y="110" fill="#1a1e2d" font-family="system-ui,sans-serif" font-size="28" font-weight="600">Study.</text>
+  <text x="32" y="142" fill="#1a1e2d" font-family="system-ui,sans-serif" font-size="28" font-weight="600">Train.</text>
+  <text x="32" y="174" fill="#1a1e2d" font-family="system-ui,sans-serif" font-size="28" font-weight="600">Rise.</text>
+  <rect x="32" y="196" width="160" height="32" fill="#fff" stroke="#eee"/>
+  <rect x="152" y="196" width="40" height="32" fill="#fdb181"/>
+  <rect x="220" y="80" width="72" height="160" rx="8" fill="#888"/>
+  <rect x="300" y="100" width="48" height="140" rx="8" fill="#666"/>
+  <rect x="356" y="110" width="36" height="130" rx="8" fill="#555"/>
+  <text x="200" y="278" text-anchor="middle" fill="#1a1e2d" font-family="system-ui,sans-serif" font-size="11" font-weight="600">100+ mentorships</text>
+</svg>

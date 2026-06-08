@@ -1,0 +1,14 @@
+.scroll-float-text {
+  display: inline-block;
+}
+
+.char {
+  display: inline-block;
+  backface-visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .char {
+    will-change: auto;
+  }
+}

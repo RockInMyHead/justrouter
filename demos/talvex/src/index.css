@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  font-family: 'Sofia Pro Medium', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+:root {
+  scrollbar-width: thin;
+  scrollbar-color: #e5e5e5 transparent;
+}

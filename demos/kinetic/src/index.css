@@ -1,0 +1,66 @@
+@import 'tailwindcss';
+
+:root {
+  --orange: #ff4d00;
+  --black: #000000;
+  --white: #ffffff;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', sans-serif;
+  background: var(--orange);
+  color: var(--black);
+}
+
+::selection {
+  background: #000;
+  color: #ff4d00;
+}
+
+.font-display {
+  font-family: 'Archivo Black', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: -0.04em;
+  line-height: 0.88;
+}
+
+.font-mono-label {
+  font-family: 'Space Mono', monospace;
+  letter-spacing: -0.02em;
+}
+
+@keyframes marquee-left {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes marquee-right {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee-left 22s linear infinite;
+}
+
+.marquee-track-reverse {
+  display: flex;
+  width: max-content;
+  animation: marquee-right 26s linear infinite;
+}
+
+.spin-indicator {
+  animation: spin-slow 12s linear infinite;
+}

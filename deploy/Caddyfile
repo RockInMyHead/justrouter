@@ -1,0 +1,89 @@
+{
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	email admin@justrouter.ru
+}
+
+*.justrouter.ru, justrouter.ru {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	route {
+		# ── API & Telegram webhook (прокси на Express) ──
+		@api_or_webhook {
+			path /api/*
+		}
+		reverse_proxy @api_or_webhook 127.0.0.1:3000 {
+			health_uri /api/health
+			health_interval 10s
+			fail_duration 5s
+			transport http {
+				read_timeout 120s
+				write_timeout 120s
+			}
+		}
+
+		# ── Демо-сайты (поддомены) ──
+		@demo_kinetic host kinetic.justrouter.ru
+		handle @demo_kinetic {
+			root * /var/www/justrouter.ru/dist/demos/kinetic
+			try_files {path} {path}/index.html /index.html
+			file_server
+		}
+
+		@demo_design host design.justrouter.ru
+		handle @demo_design {
+			root * /var/www/justrouter.ru/dist/demos/design
+			try_files {path} {path}/index.html /index.html
+			file_server
+		}
+
+		@demo_wealth host wealth.justrouter.ru
+		handle @demo_wealth {
+			root * /var/www/justrouter.ru/dist/demos/wealth
+			try_files {path} /index.html
+			file_server
+		}
+
+		@demo_slides host slides.justrouter.ru
+		handle @demo_slides {
+			root * /var/www/justrouter.ru/dist/demos/slides
+			try_files {path} /index.html
+			file_server
+		}
+
+		@demo_neon host neon.justrouter.ru
+		handle @demo_neon {
+			root * /var/www/justrouter.ru/dist/demos/neon
+			try_files {path} /index.html
+			file_server
+		}
+
+		@demo_bloom host bloom.justrouter.ru
+		handle @demo_bloom {
+			root * /var/www/justrouter.ru/dist/demos/bloom
+			try_files {path} /index.html
+			file_server
+		}
+
+		# ── Статика SPA (собранный фронтенд) ──
+		root * /var/www/justrouter.ru/dist
+		try_files {path} {path}/index.html /index.html
+		file_server
+
+		encode gzip
+	}
+
+	log {
+		output file /var/log/caddy/justrouter.ru.log
+		level INFO
+	}
+
+	header / {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}

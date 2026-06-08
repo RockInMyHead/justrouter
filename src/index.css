@@ -9,6 +9,11 @@
   --milk-soft: rgba(247, 241, 232, 0.82);
   --milk-muted: rgba(247, 241, 232, 0.72);
   --gray-text: #6f6f6f;
+  --font-bump: 2pt;
+}
+
+html {
+  font-size: calc(100% + var(--font-bump));
 }
 
 body.light-theme {
@@ -31,13 +36,26 @@ body {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
-.text-white,
-[class*="text-white/"] {
-  color: var(--milk) !important;
+.text-white {
+  color: var(--milk);
 }
 
+/* Не ломаем opacity-варианты Tailwind (text-white/40 и т.д.) */
+
 .text-black {
-  color: var(--gray-text) !important;
+  color: var(--gray-text);
+}
+
+/* Явный контраст для светлых CTA-кнопок */
+.btn-solid-light {
+  background-color: #ffffff !important;
+  color: #111827 !important;
+  -webkit-text-fill-color: #111827;
+}
+
+.btn-accent {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff;
 }
 
 .bg-white {
@@ -73,4 +91,114 @@ body.justrouter-home [id*="crisp" i],
 body.justrouter-home [class*="intercom" i],
 body.justrouter-home [id*="intercom" i] {
   display: none !important;
+}
+
+/* Tailwind arbitrary px sizes — тоже +2pt */
+@layer utilities {
+  [class*="text-[9px]"] { font-size: calc(9px + var(--font-bump)) !important; }
+  [class*="text-[10px]"] { font-size: calc(10px + var(--font-bump)) !important; }
+  [class*="text-[11px]"] { font-size: calc(11px + var(--font-bump)) !important; }
+  [class*="text-[12px]"] { font-size: calc(12px + var(--font-bump)) !important; }
+}
+
+.hero-bg-video {
+  object-position: center;
+}
+
+.hero-bg-video::-webkit-media-controls,
+.hero-bg-video::-webkit-media-controls-enclosure,
+.hero-bg-video::-webkit-media-controls-panel,
+.hero-bg-video::-webkit-media-controls-start-playback-button,
+.hero-bg-video::-webkit-media-controls-overlay-play-button,
+.hero-bg-video::-webkit-media-controls-play-button {
+  display: none !important;
+  -webkit-appearance: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Liquid Glass (жидкое стекло) ── */
+@keyframes liquid-shimmer {
+  0% { background-position: -200% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+@keyframes liquid-iris {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.btn-liquid-glass {
+  position: relative;
+  overflow: hidden;
+  font-family: 'Inter', sans-serif;
+  border: none;
+  cursor: pointer;
+  isolation: isolate;
+  background: linear-gradient(
+    135deg,
+    rgba(139,92,246,0.25) 0%,
+    rgba(59,130,246,0.25) 30%,
+    rgba(147,51,234,0.25) 60%,
+    rgba(139,92,246,0.25) 100%
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #E0D6FF;
+  transition: transform 0.3s cubic-bezier(0.23, 1, 0.32, 1), box-shadow 0.3s ease;
+  box-shadow:
+    0 0 20px rgba(139,92,246,0.08),
+    inset 0 1px 0 rgba(255,255,255,0.15);
+}
+
+.btn-liquid-glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.06) 25%,
+    rgba(255,255,255,0.15) 37%,
+    rgba(255,255,255,0.06) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: liquid-shimmer 4s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.btn-liquid-glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(167,139,250,0.4) 0%,
+    rgba(96,165,250,0.2) 25%,
+    rgba(192,132,252,0.3) 50%,
+    rgba(167,139,250,0.4) 75%,
+    rgba(96,165,250,0.2) 100%
+  );
+  background-size: 200% 200%;
+  animation: liquid-shimmer 6s ease-in-out infinite;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.btn-liquid-glass:hover {
+  transform: scale(1.03);
+  box-shadow:
+    0 0 30px rgba(139,92,246,0.15),
+    inset 0 1px 0 rgba(255,255,255,0.2);
+}
+
+.btn-liquid-glass:active {
+  transform: scale(0.97);
 }

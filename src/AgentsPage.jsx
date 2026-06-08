@@ -90,7 +90,7 @@ export default function AgentsPage() {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => navigate('/api-docs')}
+            onClick={() => navigate('/docs')}
             className="text-xs font-medium px-3 py-1.5 rounded-full flex items-center gap-1.5 cursor-pointer"
             style={{
               color: 'rgba(255,255,255,0.6)',
@@ -249,7 +249,7 @@ export default function AgentsPage() {
             {/* Quick actions */}
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={() => navigate('/api-docs')}
+                onClick={() => navigate('/docs')}
                 className="px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 cursor-pointer"
                 style={{ color: 'rgba(255,255,255,0.6)', backgroundColor: 'rgba(255,255,255,0.05)' }}
               >
@@ -371,7 +371,7 @@ export default function AgentsPage() {
                 Передавайте API-ключ в заголовке <code style={{ color: 'rgba(255,255,255,0.6)' }}>X-Api-Key</code>.
               </p>
               <button
-                onClick={() => navigate('/api-docs')}
+                onClick={() => navigate('/docs')}
                 className="mt-3 text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
                 style={{ color: '#3B82F6' }}
               >

@@ -1,0 +1,28 @@
+services:
+  justrouter:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    command: npm start
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../server/velorix.db:/app/server/velorix.db
+
+  openclaw-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    command: npm run openclaw:report-worker
+    restart: unless-stopped
+    volumes:
+      - ../server/velorix.db:/app/server/velorix.db
+    environment:
+      OPENCLAW_REPORT_HOURS: "12"
+      OPENCLAW_REPORT_PATH: "/"
+      OPENCLAW_REPORT_INTERVAL_MS: "43200000"

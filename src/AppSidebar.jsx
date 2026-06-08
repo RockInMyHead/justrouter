@@ -1,21 +1,33 @@
-import { useNavigate } from 'react-router-dom';
-import { Cpu, SlidersHorizontal, Bot, User, LogOut } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Cpu, SlidersHorizontal, User, FileText, HelpCircle, LogOut } from 'lucide-react';
 import { api } from './api.js';
+import { getToken, clearAuth } from './auth.js';
 
-const sidebarItems = [
-  { id: 'models', label: 'Модели', icon: Cpu, path: '/models' },
-  { id: 'agents', label: 'Агенты', icon: Bot, path: '/agents' },
+export const sidebarItems = [
+  { id: 'models', label: 'Модели', icon: Cpu, path: '/models/text' },
+  { id: 'blog', label: 'Блог', icon: FileText, path: '/blog' },
+  { id: 'faq', label: 'FAQ', icon: HelpCircle, path: '/faq' },
   { id: 'account', label: 'Аккаунт', icon: User, path: '/account' },
-  { id: 'settings', label: 'Настройки', icon: SlidersHorizontal, path: '/account' },
+  { id: 'settings', label: 'Настройки', icon: SlidersHorizontal, path: '/account/settings' },
 ];
 
-export default function AppSidebar({ activeItem }) {
+export function resolveActiveItem(pathname) {
+  if (pathname.startsWith('/account/settings')) return 'settings';
+  if (pathname.startsWith('/account')) return 'account';
+  if (pathname.startsWith('/models')) return 'models';
+  if (pathname.startsWith('/blog')) return 'blog';
+  if (pathname.startsWith('/faq')) return 'faq';
+  return '';
+}
+
+export default function AppSidebar({ activeItem: activeItemProp }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const activeItem = activeItemProp || resolveActiveItem(location.pathname);
 
   const handleLogout = async () => {
     await api.logout().catch(() => {});
-    localStorage.removeItem('velorix_token');
-    localStorage.removeItem('velorix_session');
+    clearAuth();
     navigate('/');
   };
 
@@ -35,7 +47,10 @@ export default function AppSidebar({ activeItem }) {
         {sidebarItems.map((item) => (
           <button
             key={item.id}
-            onClick={() => navigate(item.path)}
+            onClick={() => navigate(
+              item.path,
+              item.id === 'models' ? { state: { view: 'catalog' } } : undefined,
+            )}
             className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer text-left "
             style={{
               backgroundColor: activeItem === item.id ? 'rgba(255,255,255,0.08)' : 'transparent',
@@ -49,14 +64,16 @@ export default function AppSidebar({ activeItem }) {
       </nav>
 
       <div className="mt-auto pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 w-full text-left "
-          style={{ color: 'rgba(255,255,255,0.4)' }}
-        >
-          <LogOut size={16} />
-          Выйти
-        </button>
+        {getToken() && (
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 w-full text-left "
+            style={{ color: 'rgba(255,255,255,0.4)' }}
+          >
+            <LogOut size={16} />
+            Выйти
+          </button>
+        )}
       </div>
     </div>
   );

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Cpu, Banknote, TrendingUp, Zap, Star, ChevronDown, SlidersHorizontal, ArrowLeft, Coins, X as XIcon, Send, ExternalLink, Clock, MessageSquare, Info, Bot, Key, Image as ImageIcon, Mic, Volume2, Square, Wand2, FileAudio } from 'lucide-react';
-import { api } from './api.js';
+import { Search, Banknote, TrendingUp, Zap, Star, ChevronDown, ArrowLeft, Coins, X as XIcon, Send, ExternalLink, Clock, MessageSquare, Info, Key, Image as ImageIcon, Mic, Volume2, Square, Wand2, FileAudio, Cpu } from 'lucide-react';
+import { api, isAuthError } from './api.js';
+import { getToken, clearAuth } from './auth.js';
 import AppSidebar from './AppSidebar.jsx';
 
 const pageBg = 'var(--page-bg)';
@@ -59,39 +60,27 @@ function freeTierGlowStyle() {
 }
 
 const CATEGORIES = [
-  { id: 'all', label: 'Все', icon: Cpu },
   { id: 'text', label: 'Текст', icon: Zap },
   { id: 'image', label: 'Изображения', icon: Star },
   { id: 'audio', label: 'Аудио', icon: TrendingUp },
   { id: 'video', label: 'Видео', icon: ChevronDown },
-  { id: 'embedding', label: 'Эмбеддинги', icon: SlidersHorizontal },
 ];
 
 function formatPrice(price) {
-  const rub = price * 80;
+  // price is API units → rubles
+  const rub = price * 80 * 0.001; // ~rub per 1 сообщение
+  if (rub < 0.01) return '< 0.01 ₽';
   if (rub < 1) return `${rub.toFixed(2)} ₽`;
   if (rub < 100) return `${rub.toFixed(1)} ₽`;
   return `${Math.round(rub)} ₽`;
 }
 
 function formatModelPrice(model) {
-  if (model.category === 'audio') {
-    return `${formatPrice(model.price)}/сек`;
-  }
-
-  return `${formatPrice(model.price)}/M`;
-}
-
-function formatEstimatedCost(model) {
-  if (model.category === 'audio') {
-    return `≈ ${formatPrice(model.price * 60)} за минуту`;
-  }
-
-  return `≈ ${(model.price * 80 * 0.001).toFixed(2)} ₽ за сообщение`;
-}
-
-function getInitials(name) {
-  return name.slice(0, 2).toUpperCase();
+  if (model.category === 'audio') return `${formatPrice(model.price)}/сек`;
+  if (model.category === 'image') return `${formatPrice(model.price)}/изобр`;
+  if (model.category === 'video') return `${formatPrice(model.price)}/видео`;
+  if (model.category === 'embedding') return `${formatPrice(model.price)}/1K`;
+  return `${formatPrice(model.price)}/сообщ`;
 }
 
 function getModelToolType(model) {
@@ -327,43 +316,251 @@ function SttTool({ model }) {
   );
 }
 
-function ImageTool({ model }) {
-  const [prompt, setPrompt] = useState('Футуристичный AI gateway в стиле минималистичного интерфейса');
-  const [generatedPrompt, setGeneratedPrompt] = useState('');
+function ImageTool({ model: initialModel, onBalanceChange, onLoginRequired }) {
+  var [currentModel, setCurrentModel] = useState(initialModel);
+  var promptState = useState('Футуристичный AI gateway в стиле минималистичного интерфейса');
+  var prompt = promptState[0];
+  var setPrompt = promptState[1];
+  var aspectState = useState('1:1');
+  var aspectRatio = aspectState[0];
+  var setAspectRatio = aspectState[1];
+  var sizeState = useState('1K');
+  var imageSize = sizeState[0];
+  var setImageSize = sizeState[1];
+  var refImagesState = useState([]);
+  var referenceImages = refImagesState[0];
+  var setReferenceImages = refImagesState[1];
+  var generatedState = useState([]);
+  var generatedImages = generatedState[0];
+  var setGeneratedImages = generatedState[1];
+  var genTextState = useState('');
+  var generatedText = genTextState[0];
+  var setGeneratedText = genTextState[1];
+  var loadingState = useState(false);
+  var loading = loadingState[0];
+  var setLoading = loadingState[1];
+  var errorState = useState('');
+  var error = errorState[0];
+  var setError = errorState[1];
+  var elapsedState = useState(0);
+  var elapsed = elapsedState[0];
+  var setElapsed = elapsedState[1];
+  var timerRef = useRef(null);
+  var [imageModels, setImageModels] = useState([]);
+  var model = currentModel;
+
+  // Load all image models from DB
+  useEffect(function() {
+    api.getModels({ category: 'image' }).then(function(m) {
+      var enriched = m.map(function(mdl) { return enrichModel(mdl); });
+      enriched.sort(function(a, b) { return a.price - b.price; });
+      setImageModels(enriched);
+      // Ensure current model is in the list
+      if (initialModel && !enriched.some(function(e) { return e.id === initialModel.id; })) {
+        setCurrentModel(enriched[0] || initialModel);
+      }
+    }).catch(function() {});
+  }, []);
+
+  function handleGenerate() {
+    if (!prompt.trim() || !model) return;
+    setLoading(true);
+    setError('');
+    setGeneratedImages([]);
+    setGeneratedText('');
+    var start = Date.now();
+    setElapsed(0);
+    timerRef.current = setInterval(function() {
+      setElapsed(Date.now() - start);
+    }, 100);
+
+    api.generateImage({
+      model_id: model.id,
+      prompt: prompt.trim(),
+      aspect_ratio: aspectRatio,
+      image_size: imageSize,
+      reference_images: referenceImages,
+    }).then(function(res) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setLoading(false);
+      if (res.images) {
+        setGeneratedImages(res.images.map(function(img) {
+          return typeof img === 'string' ? img : img.url;
+        }));
+      }
+      if (res.text) setGeneratedText(res.text);
+      if (res.balance != null) {
+        if (onBalanceChange) onBalanceChange(res.balance);
+      }
+    }).catch(function(err) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setLoading(false);
+      if (isAuthError(err) && onLoginRequired) {
+        onLoginRequired();
+        return;
+      }
+      setError(err.message || 'Ошибка генерации');
+    });
+  }
+
+  function handleFileUpload(e) {
+    var files = Array.from(e.target.files || []);
+    files.slice(0, 4).forEach(function(file) {
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        setReferenceImages(function(prev) {
+          if (prev.length >= 4) return prev;
+          return prev.concat(ev.target.result);
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = '';
+  }
+
+  function removeRefImage(idx) {
+    setReferenceImages(function(prev) {
+      var copy = prev.slice();
+      copy.splice(idx, 1);
+      return copy;
+    });
+  }
 
   return (
-    <div className="flex-1 p-5 sm:p-6 overflow-y-auto">
-      <div className="max-w-2xl mx-auto space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="size-12 rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${model.color}15` }}>
-            <ImageIcon size={22} style={{ color: model.color }} />
-          </div>
+    <div className="flex-1 flex min-h-0">
+      {/* Left: model list */}
+      <div className="w-56 shrink-0 overflow-y-auto p-3 space-y-2" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="text-white/30 text-[10px] font-mono uppercase tracking-wider mb-3 px-2">Модели</div>
+        {imageModels.map(function(m) {
+          var active = m.id === (model && model.id);
+          return (
+            <div
+              key={m.id}
+              onClick={function() { setCurrentModel(m); }}
+              className={'px-3 py-2.5 rounded-xl text-xs cursor-pointer transition-all ' + (active
+                ? 'text-white' : 'text-white/50 hover:text-white/80')}
+              style={{
+                backgroundColor: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                borderLeft: active ? '2px solid ' + m.color : '2px solid transparent',
+              }}
+            >
+              <div className="font-medium truncate">{m.name}</div>
+              <div className="text-white/30 text-[10px] font-mono mt-0.5 truncate">{m.provider}</div>
+              <div className="text-white/40 text-[10px] font-mono mt-0.5">{formatModelPrice(m)}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Right: generation panel */}
+      <div className="flex-1 p-5 sm:p-6 overflow-y-auto">
+        <div className="max-w-2xl mx-auto space-y-4">
           <div>
-            <h3 className="text-white font-semibold">Генерация изображения</h3>
-            <p className="text-white/40 text-xs">Опишите изображение и получите визуальный превью-макет.</p>
+            <h3 className="text-white text-base font-semibold">Генерация изображения</h3>
+            <p className="text-white/40 text-xs mt-1">Текст + опционально ваши фото как референс (image-to-image).</p>
           </div>
-        </div>
 
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          className="w-full min-h-28 rounded-2xl p-4 text-white text-sm placeholder-white/20 outline-none resize-none"
-          style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
-          placeholder="Промпт для изображения..."
-        />
+          {/* Current model badge */}
+          {model && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ backgroundColor: `${model.color}10`, border: `1px solid ${model.color}20` }}>
+              <Zap size={12} style={{ color: model.color }} />
+              <span className="text-xs font-medium" style={{ color: model.color + 'dd' }}>{model.name}</span>
+              <span className="text-white/30 text-[10px] font-mono ml-auto">{formatModelPrice(model)}</span>
+            </div>
+          )}
 
-        <button onClick={() => setGeneratedPrompt(prompt.trim())} className="w-full py-3 rounded-xl text-sm font-semibold transition-opacity hover:opacity-85" style={{ backgroundColor: `${model.color}22`, color: model.color }}>
-          <Wand2 size={16} className="inline mr-2" />
-          Сгенерировать
-        </button>
+          <textarea
+            value={prompt}
+            onChange={function(e) { setPrompt(e.target.value); }}
+            className="w-full min-h-24 rounded-2xl p-4 text-white text-sm placeholder-white/20 outline-none resize-none"
+            style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+            placeholder="Промпт для изображения..."
+          />
 
-        <div className="aspect-video rounded-2xl overflow-hidden relative flex items-center justify-center" style={{ background: `radial-gradient(circle at 25% 20%, ${model.color}55, transparent 32%), radial-gradient(circle at 80% 75%, rgba(255,255,255,0.16), transparent 36%), #111`, border: '1px solid rgba(255,255,255,0.08)' }}>
-          <div className="absolute inset-0" style={{ backgroundImage: 'linear-gradient(135deg, rgba(255,255,255,0.08) 0 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
-          <div className="relative z-10 text-center px-6">
-            <ImageIcon size={34} className="mx-auto mb-3 text-white/70" />
-            <p className="text-white/80 text-sm font-medium">{generatedPrompt || 'Превью появится после генерации'}</p>
-            <p className="mt-2 text-white/35 text-xs">Демо-интерфейс. Подключение реального провайдера выполняется через API-ключ.</p>
+          {/* Reference images */}
+          <div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {referenceImages.map(function(url, idx) {
+                return (
+                  <div key={idx} className="relative size-16 rounded-lg overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.1)' }}>
+                    <img src={url} className="size-full object-cover" alt="reference" />
+                    <button
+                      onClick={function() { removeRefImage(idx); }}
+                      className="absolute top-0 right-0 size-5 flex items-center justify-center text-[10px] cursor-pointer"
+                      style={{ backgroundColor: 'rgba(0,0,0,0.7)', color: '#fff' }}
+                    >✕</button>
+                  </div>
+                );
+              })}
+            </div>
+            {referenceImages.length < 4 && (
+              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs cursor-pointer"
+                style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.5)' }}>
+                <input type="file" accept="image/*" multiple onChange={handleFileUpload} className="hidden" />
+                + Референс
+              </label>
+            )}
           </div>
+
+          {/* Aspect ratio & size */}
+          <div className="flex gap-3">
+            <select value={aspectRatio} onChange={function(e) { setAspectRatio(e.target.value); }}
+              className="flex-1 rounded-xl px-3 py-2 text-xs text-white outline-none font-mono"
+              style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <option value="1:1" style={{ backgroundColor: '#111' }}>1:1 (Квадрат)</option>
+              <option value="16:9" style={{ backgroundColor: '#111' }}>16:9 (Горизонт)</option>
+              <option value="9:16" style={{ backgroundColor: '#111' }}>9:16 (Вертикаль)</option>
+              <option value="4:3" style={{ backgroundColor: '#111' }}>4:3</option>
+              <option value="3:2" style={{ backgroundColor: '#111' }}>3:2</option>
+            </select>
+            <select value={imageSize} onChange={function(e) { setImageSize(e.target.value); }}
+              className="flex-1 rounded-xl px-3 py-2 text-xs text-white outline-none font-mono"
+              style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <option value="1K" style={{ backgroundColor: '#111' }}>1K (1024×1024)</option>
+              <option value="2K" style={{ backgroundColor: '#111' }}>2K (2048×2048)</option>
+              <option value="4K" style={{ backgroundColor: '#111' }}>4K (4096×4096)</option>
+            </select>
+          </div>
+
+          {error && (
+            <div className="rounded-xl p-3 text-red-300 text-xs" style={{ backgroundColor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)' }}>{error}</div>
+          )}
+
+          <button onClick={handleGenerate} disabled={loading || !prompt.trim() || !model}
+            className="w-full py-3 rounded-xl text-sm font-semibold transition-opacity disabled:opacity-40 cursor-pointer"
+            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#fff' }}>
+            {loading ? (
+              <span>Генерация... {elapsed > 0 ? (elapsed / 1000).toFixed(1) + 's' : ''}</span>
+            ) : (
+              <span><Wand2 size={16} className="inline mr-2" />Сгенерировать</span>
+            )}
+          </button>
+
+          {/* Results */}
+          {generatedImages.length > 0 && (
+            <div className="space-y-3">
+              {generatedImages.map(function(url, idx) {
+                return (
+                  <div key={idx} className="rounded-2xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <img src={url} className="w-full" alt={'generated-' + idx} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {generatedText && (
+            <div className="rounded-xl p-4 text-white/80 text-sm whitespace-pre-wrap" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              {generatedText}
+            </div>
+          )}
+          {!generatedImages.length && !generatedText && !loading && (
+            <div className="aspect-video rounded-2xl overflow-hidden relative flex items-center justify-center" style={{ background: 'radial-gradient(circle at 25% 20%, rgba(16,185,129,0.25), transparent 32%), radial-gradient(circle at 80% 75%, rgba(255,255,255,0.1), transparent 36%), #111', border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div className="relative z-10 text-center px-6">
+                <ImageIcon size={34} className="mx-auto mb-3 text-white/40" />
+                <p className="text-white/50 text-sm">Результат появится здесь</p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -634,7 +831,7 @@ function ModelModal({ model, onClose, onApiKey, initialMessage = '' }) {
           )}
           {toolType === 'tts' && <TtsTool model={model} />}
           {toolType === 'stt' && <SttTool model={model} />}
-          {toolType === 'image' && <ImageTool model={model} />}
+          {toolType === 'image' && <ImageTool model={model} balance={balance} onBalanceChange={function(b) { setBalance(b); }} />}
           {(toolType === 'video' || toolType === 'embedding') && <UtilityTool model={model} />}
         </div>
       </div>
@@ -871,64 +1068,69 @@ function ModelCard({ model, onSelect, onApiKey, active = false }) {
         />
       )}
       <div className="relative z-10 p-5 sm:p-6 flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-start justify-between mb-3">
+      {/* Header: name + badge */}
+      <div className="flex items-start justify-between gap-3 mb-2">
         <div className="min-w-0">
           <h3 className="text-white text-base font-semibold truncate">{model.name}</h3>
-          <span className="text-white/30 text-xs font-mono">{model.provider} · {model.id.split('/')[1]}</span>
+          {model.provider && (
+            <span className="text-white/30 text-xs font-mono">{model.provider} · {model.id.split('/')[1]}</span>
+          )}
         </div>
-        {model.badge && (
-          <span
-            className="text-[11px] font-medium px-2.5 py-0.5 rounded-full shrink-0 ml-2"
-            style={{ backgroundColor: `${model.color}15`, color: model.color, border: `1px solid ${model.color}20` }}
+        <div className="flex items-center gap-2 shrink-0">
+          {model.badge && (
+            <span
+              className="text-[11px] font-medium px-2.5 py-0.5 rounded-full"
+              style={{ backgroundColor: `${model.color}15`, color: model.color, border: `1px solid ${model.color}20` }}
+            >
+              {model.badge}
+            </span>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onApiKey(model); }}
+            className="text-white/20 hover:text-white/60 transition-colors"
+            title="API ключ"
           >
-            {model.badge}
-          </span>
-        )}
+            <Key size={14} />
+          </button>
+        </div>
       </div>
 
-      {/* Divider */}
-      <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.04)' }} className="mb-2" />
-
-      {/* Description */}
-      {model.desc && (
-        <p className="text-xs leading-relaxed mb-3 text-white/70 line-clamp-3">
-          {model.desc}
-        </p>
-      )}
-
-      {/* Stats row */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm mb-4">
+      {/* Price + stats row */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm mt-1">
         <div className="flex items-center gap-1">
-          <Banknote size={12} className="text-white/40" />
-          <span className="text-white/80">{formatModelPrice(model)}</span>
+          <Banknote size={13} className="text-white/40" />
+          <span className="text-white/90 font-semibold">{formatModelPrice(model)}</span>
         </div>
         {model.context > 0 && (
           <div className="flex items-center gap-1">
-            <span className="text-white/80">{formatContext(model.context)}</span>
-            <span className="text-white/40 text-[10px]">ctx</span>
+            <span className="text-white/70 text-xs">{formatContext(model.context)}</span>
+            <span className="text-white/30 text-[10px]">ctx</span>
           </div>
         )}
         <div className="flex items-center gap-1">
           <Zap size={12} className="text-white/40" />
-          <span className="text-white/80">{model.speed}</span>
+          <span className="text-white/70 text-xs">{model.speed}</span>
         </div>
       </div>
-      <div className="text-[10px] font-mono mb-4 text-white/50">
-        {formatEstimatedCost(model)}
-      </div>
 
-      {/* Footer */}
-      <div className="mt-auto flex items-center justify-between pt-3 gap-3" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-        <span className="text-[11px] font-mono truncate min-w-0" style={{ color: 'rgba(255,255,255,0.2)' }}>{model.id}</span>
-        <button
-          onClick={(e) => { e.stopPropagation(); onApiKey(model); }}
-          className="text-sm font-medium px-4 py-1.5 rounded-lg transition-all duration-200 cursor-pointer hover:opacity-80 shrink-0"
-          style={{ backgroundColor: `${model.color}15`, color: model.color }}
-        >
-          API ключ
-        </button>
-      </div>
+      {/* Strengths */}
+      {model.strengths && (
+        <div className="flex flex-wrap gap-1.5 mt-3">
+          {model.strengths.split(',').slice(0, 4).map(function(s) {
+            var t = s.trim();
+            if (!t) return null;
+            return (
+              <span
+                key={t}
+                className="text-[10px] font-mono px-2 py-0.5 rounded-md"
+                style={{ backgroundColor: `${model.color}12`, color: model.color + 'cc' }}
+              >
+                {t}
+              </span>
+            );
+          })}
+        </div>
+      )}
       </div>
     </div>
   );
@@ -1015,70 +1217,126 @@ function ApiKeyModal({ model, onClose }) {
 }
 
 export default function ModelsPage() {
-  const navigate = useNavigate();
-  const [modelSearch, setModelSearch] = useState('');
-  const [chatDraft, setChatDraft] = useState('');
-  const [chatModelId, setChatModelId] = useState('');
-  const [modalInitialMessage, setModalInitialMessage] = useState('');
-  const [category, setCategory] = useState('all');
-  const [provider, setProvider] = useState('Все');
-  const [sort, setSort] = useState('default');
-  const [session, setSession] = useState(null);
-  const [balance, setBalance] = useState(0);
-  const [selectedModel, setSelectedModel] = useState(null);
-  const [dbModels, setDbModels] = useState([]);
-  const [modelsLoading, setModelsLoading] = useState(true);
-  const [apiKeyModel, setApiKeyModel] = useState(null);
-  const [pickedModelId, setPickedModelId] = useState('');
+  var navigate = useNavigate();
+  var modelSearchState = useState('');
+  var modelSearch = modelSearchState[0];
+  var setModelSearch = modelSearchState[1];
+  var chatDraftState = useState('');
+  var chatDraft = chatDraftState[0];
+  var setChatDraft = chatDraftState[1];
+  var chatModelIdState = useState('');
+  var chatModelId = chatModelIdState[0];
+  var setChatModelId = chatModelIdState[1];
+  var modalInitialMessageState = useState('');
+  var modalInitialMessage = modalInitialMessageState[0];
+  var setModalInitialMessage = modalInitialMessageState[1];
+  var categoryState = useState('all');
+  var category = categoryState[0];
+  var setCategory = categoryState[1];
+  var providerState = useState('Все');
+  var provider = providerState[0];
+  var setProvider = providerState[1];
+  var sortState = useState('default');
+  var sort = sortState[0];
+  var setSort = sortState[1];
+  var sessionState = useState(null);
+  var session = sessionState[0];
+  var setSession = sessionState[1];
+  var balanceState = useState(0);
+  var balance = balanceState[0];
+  var setBalance = balanceState[1];
+  var selectedModelState = useState(null);
+  var selectedModel = selectedModelState[0];
+  var setSelectedModel = selectedModelState[1];
+  var dbModelsState = useState([]);
+  var dbModels = dbModelsState[0];
+  var setDbModels = dbModelsState[1];
+  var modelsLoadingState = useState(true);
+  var modelsLoading = modelsLoadingState[0];
+  var setModelsLoading = modelsLoadingState[1];
+  var apiKeyModelState = useState(null);
+  var apiKeyModel = apiKeyModelState[0];
+  var setApiKeyModel = apiKeyModelState[1];
+  var pickedModelIdState = useState('');
+  var pickedModelId = pickedModelIdState[0];
+  var setPickedModelId = pickedModelIdState[1];
+  var authValidatedState = useState(false);
+  var authValidated = authValidatedState[0];
+  var setAuthValidated = authValidatedState[1];
+  var imageToolModelIdState = useState('');
+  var imageToolModelId = imageToolModelIdState[0];
+  var setImageToolModelId = imageToolModelIdState[1];
 
-  useEffect(() => {
-    const s = JSON.parse(localStorage.getItem('velorix_session') || 'null');
-    setSession(s);
-    if (s) setBalance(s.balance);
+  useEffect(function() {
+    var token = getToken();
+    if (!token) {
+      clearAuth();
+      setSession(null);
+      setBalance(0);
+      setAuthValidated(true);
+    } else {
+      var s = JSON.parse(localStorage.getItem('velorix_session') || 'null');
+      setSession(s);
+      if (s) setBalance(s.balance);
 
+      if (s) {
+        api.me().then(function(u) {
+          setBalance(u.balance);
+          localStorage.setItem('velorix_session', JSON.stringify(u));
+        }).catch(function() {});
+      }
+      setAuthValidated(true);
+    }
+
+    // Load models regardless of auth status
     api.getModels()
       .then(setDbModels)
-      .catch(() => {})
-      .finally(() => setModelsLoading(false));
-
-    if (s) {
-      api.me().then((u) => {
-        setBalance(u.balance);
-        localStorage.setItem('velorix_session', JSON.stringify(u));
-      }).catch(() => {});
-    }
+      .catch(function() {})
+      .finally(function() { setModelsLoading(false); });
   }, []);
 
-  const models = useMemo(() => dbModels.map(enrichModel), [dbModels]);
+  var models = useMemo(function() { return dbModels.map(enrichModel); }, [dbModels]);
 
-  useEffect(() => {
+  useEffect(function() {
     if (chatModelId || models.length === 0) return;
-    const preferred = models.find((model) => model.id === 'openai/gpt-4o')
-      || models.find((model) => model.category === 'text')
+    var preferred = models.find(function(m) { return m.id === 'openai/gpt-4o'; })
+      || models.find(function(m) { return m.category === 'text'; })
       || models[0];
     if (preferred) setChatModelId(preferred.id);
   }, [models, chatModelId]);
 
-  const providerOptions = useMemo(() => {
-    const names = [...new Set(models.map((model) => model.provider))].sort((a, b) => a.localeCompare(b, 'ru'));
+  useEffect(function() {
+    if (category === 'image' && models.length > 0) {
+      var imgs = models.filter(function(m) { return m.category === 'image'; });
+      if (imgs.length > 0 && !imgs.some(function(m) { return m.id === imageToolModelId; })) {
+        imgs.sort(function(a, b) { return a.price - b.price; });
+        setImageToolModelId(imgs[0].id);
+      }
+    } else if (category !== 'image') {
+      setImageToolModelId('');
+    }
+  }, [category, models]);
+
+  var providerOptions = useMemo(function() {
+    var names = [...new Set(models.map(function(m) { return m.provider; }))].sort(function(a, b) { return a.localeCompare(b, 'ru'); });
     return ['Все', ...names];
   }, [models]);
 
-  const filtered = useMemo(() => {
-    let result = [...models];
+  var filtered = useMemo(function() {
+    var result = [...models];
 
     if (modelSearch) {
-      const q = modelSearch.toLowerCase();
-      result = result.filter((m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q));
+      var q = modelSearch.toLowerCase();
+      result = result.filter(function(m) { return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q); });
     }
 
-    if (category !== 'all') result = result.filter((m) => m.category === category);
-    if (provider !== 'Все') result = result.filter((m) => m.provider === provider);
+    if (category !== 'all') result = result.filter(function(m) { return m.category === category; });
+    if (provider !== 'Все') result = result.filter(function(m) { return m.provider === provider; });
 
-    if (sort === 'price-asc') result.sort((a, b) => a.price - b.price);
-    else if (sort === 'price-desc') result.sort((a, b) => b.price - a.price);
-    else if (sort === 'speed') result.sort((a, b) => b.speed - a.speed);
-    else if (sort === 'context') result.sort((a, b) => b.context - a.context);
+    if (sort === 'price-asc') result.sort(function(a, b) { return a.price - b.price; });
+    else if (sort === 'price-desc') result.sort(function(a, b) { return b.price - a.price; });
+    else if (sort === 'speed') result.sort(function(a, b) { return b.speed - a.speed; });
+    else if (sort === 'context') result.sort(function(a, b) { return b.context - a.context; });
 
     return result;
   }, [modelSearch, category, provider, sort, models]);
@@ -1233,6 +1491,14 @@ export default function ModelsPage() {
         {/* Chat composer + grid */}
         <div className="px-5 sm:px-8 md:pl-6 py-8">
           <div className="max-w-7xl mx-auto">
+            {category === 'image' ? (function() {
+              var imgs = models.filter(function(m) { return m.category === 'image'; }).sort(function(a, b) { return a.price - b.price; });
+              var active = imgs.find(function(m) { return m.id === imageToolModelId; }) || imgs[0] || null;
+              if (!active) return null;
+              return (
+                <ImageTool model={active} balance={balance} onBalanceChange={setBalance} onLoginRequired={function() { navigate('/', { state: { auth: 'login' } }); }} />
+              );
+            })() : (
             <div className="mb-8">
               <ChatComposer
                 models={models}
@@ -1246,6 +1512,7 @@ export default function ModelsPage() {
                 onLoginRequired={() => navigate('/')}
               />
             </div>
+            )}
 
             <div className="flex items-center justify-between mb-4 gap-3">
               <span className="text-white/30 text-xs font-mono">Найдено {filtered.length} моделей</span>

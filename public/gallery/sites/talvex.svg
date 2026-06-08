@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" fill="none">
+  <rect width="400" height="300" fill="#E3E5E6"/>
+  <ellipse cx="320" cy="280" rx="200" ry="120" fill="#FFD85F" opacity="0.45"/>
+  <rect x="16" y="16" width="72" height="24" rx="12" fill="white" fill-opacity="0.7" stroke="#898989" stroke-opacity="0.3"/>
+  <text x="52" y="32" text-anchor="middle" fill="#303030" font-family="system-ui,sans-serif" font-size="10">Talvex</text>
+  <rect x="16" y="52" width="180" height="14" rx="4" fill="#303030" opacity="0.15"/>
+  <text x="16" y="78" fill="#303030" font-family="system-ui,sans-serif" font-size="14" font-weight="600">Good morning</text>
+  <rect x="16" y="92" width="120" height="8" rx="4" fill="#FFD85F"/>
+  <rect x="16" y="110" width="90" height="70" rx="12" fill="white" fill-opacity="0.65"/>
+  <rect x="114" y="110" width="90" height="70" rx="12" fill="white" fill-opacity="0.65"/>
+  <rect x="212" y="110" width="90" height="70" rx="12" fill="white" fill-opacity="0.65"/>
+  <rect x="310" y="110" width="74" height="148" rx="12" fill="white" fill-opacity="0.65"/>
+  <rect x="16" y="188" width="90" height="70" rx="12" fill="white" fill-opacity="0.65"/>
+  <rect x="114" y="188" width="188" height="70" rx="12" fill="white" fill-opacity="0.65"/>
+  <rect x="24" y="168" width="30" height="4" rx="2" fill="#FFD85F"/>
+  <rect x="24" y="176" width="50" height="3" rx="1" fill="#303030" opacity="0.3"/>
+</svg>

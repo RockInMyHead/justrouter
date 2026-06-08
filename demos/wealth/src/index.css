@@ -1,0 +1,84 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  --font-serif: 'Instrument Serif', ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif;
+  --font-dirtyline: 'Dirtyline36Daysoftype2022', sans-serif;
+  --animate-marquee: marquee 20s linear infinite;
+  @keyframes marquee {
+    100% {
+      transform: translate3d(-50%, 0, 0);
+    }
+  }
+}
+
+@font-face {
+  font-family: 'Dirtyline36Daysoftype2022';
+  src: url('/Dirtyline-36daysoftype-2022.woff2') format('woff2');
+  font-style: normal;
+  font-weight: normal;
+  text-rendering: optimizeLegibility;
+  font-display: swap;
+}
+
+html {
+  scroll-behavior: auto;
+}
+
+body {
+  background-color: black;
+  color: white;
+  margin: 0;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.gpu-layer {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.video-layer {
+  contain: strict;
+  pointer-events: none;
+}
+
+.glass-panel {
+  background-color: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(36px);
+  -webkit-backdrop-filter: blur(36px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  will-change: transform;
+}
+
+@media (min-width: 768px) {
+  .glass-panel {
+    background-color: rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(64px);
+    -webkit-backdrop-filter: blur(64px);
+  }
+}
+
+@media (min-width: 1280px) {
+  .glass-panel {
+    background-color: rgba(0, 0, 0, 0.16);
+    backdrop-filter: blur(96px);
+    -webkit-backdrop-filter: blur(96px);
+  }
+}
+
+.marquee-track {
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee {
+    animation: none;
+  }
+
+  .glass-panel {
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+}

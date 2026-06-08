@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { User, Mail, Calendar, Key, Coins, ArrowLeft, Copy, Check } from 'lucide-react';
-import { api } from './api.js';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { User, Mail, Calendar, Key, Coins, ArrowLeft, Copy, Check, Bot, Cpu, LogOut, SlidersHorizontal, Gift, Users, Zap } from 'lucide-react';
+import { api, isAuthError, fetchCurrentUser } from './api.js';
+import { getToken, clearAuth, getSession } from './auth.js';
 import AppSidebar from './AppSidebar.jsx';
+import AppMobileNav from './AppMobileNav.jsx';
+import { reachGoal } from './metrica.js';
+import { trackFunnelEvent } from './analytics.js';
 
 const pageBg = 'var(--page-bg)';
 const panelBg = 'var(--panel-bg)';
@@ -10,38 +14,87 @@ const softPanelBg = 'var(--soft-panel-bg)';
 
 export default function AccountPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const balanceRef = useRef(null);
   const [user, setUser] = useState(null);
   const [balance, setBalance] = useState(0);
+  const [bonusBalance, setBonusBalance] = useState(0);
   const [copied, setCopied] = useState(false);
   const [telegramCode, setTelegramCode] = useState(null);
   const [telegramLoading, setTelegramLoading] = useState(false);
   const [telegramError, setTelegramError] = useState('');
-  const [topupAmount, setTopupAmount] = useState(500);
+  const [topupAmount, setTopupAmount] = useState('500');
   const [topupLoading, setTopupLoading] = useState(false);
   const [topupError, setTopupError] = useState('');
+  const [loading, setLoading] = useState(() => !getSession());
+  const [loadError, setLoadError] = useState('');
+  const [referralStats, setReferralStats] = useState(null);
+  const [referralCopied, setReferralCopied] = useState(false);
+  const [referralError, setReferralError] = useState('');
+  const [promoCode, setPromoCode] = useState('');
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [promoResult, setPromoResult] = useState('');
+  const [promoError, setPromoError] = useState('');
 
   const telegramQrUrl = telegramCode?.telegram_url
     ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=12&data=${encodeURIComponent(telegramCode.telegram_url)}`
     : '';
 
   useEffect(() => {
-    const session = JSON.parse(localStorage.getItem('velorix_session') || 'null');
-    if (session) {
-      setUser(session);
-      api.me().then((u) => {
-        setUser(u);
-        setBalance(u.balance);
-        localStorage.setItem('velorix_session', JSON.stringify(u));
-      }).catch(() => {});
+    if (!getToken()) {
+      navigate('/', { state: { auth: 'login' } });
+      return;
     }
-  }, []);
+
+    const cached = getSession();
+    if (cached) {
+      setUser(cached);
+      setBalance(Number(cached.balance ?? 0));
+      setBonusBalance(Number(cached.bonus_balance ?? 0));
+      setLoading(false);
+    }
+
+    setLoadError('');
+    fetchCurrentUser()
+      .then((u) => {
+        if (!u) {
+          navigate('/', { state: { auth: 'login' } });
+          return;
+        }
+        setUser(u);
+        setBalance(Number(u.balance ?? 0));
+        setBonusBalance(Number(u.bonus_balance ?? 0));
+        api.getReferralStats().then(setReferralStats).catch((e) => {
+          setReferralError(e.message || 'Не удалось загрузить реферальную программу');
+        });
+      })
+      .catch((e) => {
+        if (isAuthError(e)) {
+          clearAuth();
+          navigate('/', { state: { auth: 'login' } });
+          return;
+        }
+        if (!cached) {
+          setLoadError(e.message || 'Не удалось загрузить профиль');
+        }
+      })
+      .finally(() => setLoading(false));
+  }, [navigate]);
 
   const copyKey = () => {
     if (user?.api_key) {
       navigator.clipboard.writeText(user.api_key);
+      reachGoal('api_key_copy');
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const copyReferralLink = () => {
+    if (!referralStats?.referral_url) return;
+    navigator.clipboard.writeText(referralStats.referral_url);
+    setReferralCopied(true);
+    setTimeout(() => setReferralCopied(false), 2000);
   };
 
   const createTelegramCode = async () => {
@@ -58,11 +111,19 @@ export default function AccountPage() {
   };
 
   const handleTopup = async () => {
+    const amount = Number(topupAmount);
+    if (!Number.isFinite(amount) || amount < 10) {
+      setTopupError('Минимальная сумма пополнения 10 ₽');
+      return;
+    }
+
     setTopupLoading(true);
     setTopupError('');
     try {
-      const payment = await api.createYookassaPayment(topupAmount);
+      const payment = await api.createYookassaPayment(amount);
       if (!payment.confirmation_url) throw new Error('ЮKassa не вернула ссылку на оплату');
+      reachGoal('topup', { amount });
+      trackFunnelEvent('topup_start', { amount, is_subscription: false })
       window.location.href = payment.confirmation_url;
     } catch (e) {
       setTopupError(e.message || 'Не удалось создать платеж');
@@ -71,7 +132,49 @@ export default function AccountPage() {
     }
   };
 
-  if (!user) {
+  const handleLogout = async () => {
+    await api.logout().catch(() => {});
+    clearAuth();
+    navigate('/');
+  };
+
+  const handlePromoApply = async () => {
+    const code = promoCode.trim();
+    if (!code || code.length < 3) {
+      setPromoError('Введите промокод');
+      return;
+    }
+    setPromoLoading(true);
+    setPromoError('');
+    setPromoResult('');
+    try {
+      const res = await api.applyPromoCode(code);
+      setPromoResult(res.message || 'Промокод активирован! +' + res.amount + ' ₽');
+      setPromoCode('');
+      // Refresh balance
+      const u = await fetchCurrentUser({ force: true });
+      if (u) {
+        setBalance(Number(u.balance ?? 0));
+        setBonusBalance(Number(u.bonus_balance ?? 0));
+      }
+    } catch (e) {
+      setPromoError(e?.error || e?.message || 'Не удалось активировать промокод');
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  // Scroll to topup section when ?tab=topup
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('tab') === 'topup' && balanceRef.current) {
+      setTimeout(() => {
+        balanceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 300);
+    }
+  }, [location.search, balanceRef.current]);
+
+  if (loading && !user) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: pageBg }}>
         <div className="text-white/40 text-sm">Загрузка...</div>
@@ -79,8 +182,40 @@ export default function AccountPage() {
     );
   }
 
+  if (loadError && !user) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6" style={{ backgroundColor: pageBg }}>
+        <p className="text-white/60 text-sm text-center">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => {
+            setLoading(true);
+            setLoadError('');
+            fetchCurrentUser({ force: true })
+              .then((u) => {
+                if (!u) {
+                  navigate('/', { state: { auth: 'login' } });
+                  return;
+                }
+                setUser(u);
+                setBalance(Number(u.balance ?? 0));
+                setBonusBalance(Number(u.bonus_balance ?? 0));
+              })
+              .catch((e) => setLoadError(e.message || 'Не удалось загрузить профиль'))
+              .finally(() => setLoading(false));
+          }}
+          className="px-4 py-2 rounded-xl bg-white text-black text-sm font-medium"
+        >
+          Повторить
+        </button>
+      </div>
+    );
+  }
+
+  if (!user) return null;
+
   return (
-    <div className="min-h-screen flex overflow-x-hidden" style={{ backgroundColor: pageBg }}>
+    <div className="min-h-screen flex overflow-x-hidden pb-20 md:pb-0" style={{ backgroundColor: pageBg }}>
       <AppSidebar activeItem="account" />
 
       {/* Main content */}
@@ -96,7 +231,7 @@ export default function AccountPage() {
         >
           <div className="flex items-center gap-3 min-w-0">
             <button
-              onClick={() => navigate('/models')}
+              onClick={() => navigate('/models/text', { state: { view: 'catalog' } })}
               className="text-white/30 hover:text-white/60 transition-colors p-1 cursor-pointer"
             >
               <ArrowLeft size={18} />
@@ -213,6 +348,58 @@ export default function AccountPage() {
               </div>
             </div>
 
+            <div
+              className="rounded-2xl p-6"
+              style={{
+                backgroundColor: softPanelBg,
+                border: '1px solid rgba(255,255,255,0.06)',
+              }}
+            >
+              <div className="flex items-center gap-3 mb-5">
+                <div className="size-12 rounded-2xl flex items-center justify-center" style={{ backgroundColor: 'rgba(16,185,129,0.12)' }}>
+                  <Gift size={22} className="text-emerald-400" />
+                </div>
+                <div>
+                  <h2 className="text-white text-base font-semibold">Пригласите друзей</h2>
+                  <p className="text-white/45 text-sm">Вы и друг получите по {referralStats?.bonus_rub || 200} ₽</p>
+                </div>
+              </div>
+
+              {referralStats ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-xl p-4" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div className="flex items-center gap-2 text-white/40 text-xs mb-1"><Users size={14} /> Приглашено</div>
+                      <div className="text-white text-xl font-semibold">{referralStats.invited_count}</div>
+                    </div>
+                    <div className="rounded-xl p-4" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div className="flex items-center gap-2 text-white/40 text-xs mb-1"><Gift size={14} /> Заработано</div>
+                      <div className="text-white text-xl font-semibold">{referralStats.earned_rub.toFixed(0)} ₽</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      readOnly
+                      value={referralStats.referral_url}
+                      className="flex-1 min-w-0 rounded-xl px-3 py-2.5 text-sm text-white/80 outline-none"
+                      style={{ backgroundColor: 'rgba(0,0,0,0.25)', border: '1px solid rgba(255,255,255,0.06)' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={copyReferralLink}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium text-black bg-emerald-400 hover:bg-emerald-300 transition-colors"
+                    >
+                      {referralCopied ? <Check size={16} /> : <Copy size={16} />}
+                      {referralCopied ? 'Скопировано' : 'Копировать'}
+                    </button>
+                  </div>
+                  <p className="text-white/30 text-xs">Код: {referralStats.referral_code}</p>
+                </div>
+              ) : (
+                <p className="text-white/45 text-sm">{referralError || 'Загрузка реферальной ссылки…'}</p>
+              )}
+            </div>
+
             {/* Telegram card */}
             <div
               className="rounded-2xl p-6"
@@ -237,8 +424,8 @@ export default function AccountPage() {
                     <button
                       onClick={createTelegramCode}
                       disabled={telegramLoading}
-                      className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 disabled:opacity-50"
-                      style={{ backgroundColor: 'rgba(59,130,246,0.14)', color: '#BFDBFE' }}
+                      className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 disabled:opacity-50 btn-accent"
+                      style={{ backgroundColor: 'rgba(59,130,246,0.28)', border: '1px solid rgba(96,165,250,0.55)' }}
                     >
                       {telegramLoading ? 'Генерация...' : 'Получить код'}
                     </button>
@@ -265,8 +452,8 @@ export default function AccountPage() {
                           href={telegramCode.telegram_url}
                           target="_blank"
                           rel="noreferrer"
-                          className="mt-3 inline-flex items-center justify-center px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 hover:opacity-85"
-                          style={{ backgroundColor: 'rgba(59,130,246,0.14)', color: '#BFDBFE' }}
+                          className="mt-3 inline-flex items-center justify-center px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 hover:opacity-85 btn-accent"
+                          style={{ backgroundColor: 'rgba(59,130,246,0.28)', border: '1px solid rgba(96,165,250,0.55)' }}
                         >
                           Открыть Telegram
                         </a>
@@ -282,6 +469,7 @@ export default function AccountPage() {
 
             {/* Balance card */}
             <div
+              ref={balanceRef}
               className="rounded-2xl p-6"
               style={{
                 backgroundColor: softPanelBg,
@@ -299,29 +487,71 @@ export default function AccountPage() {
                 <div>
                   <div className="text-3xl font-bold text-white">{balance.toFixed(2)} ₽</div>
                   <div className="text-white/30 text-xs font-mono mt-0.5">RUB</div>
+                  {bonusBalance > 0 && (
+                    <div className="text-amber-300/80 text-xs font-mono mt-2">
+                      из них {bonusBalance.toFixed(0)} ₽ бонус
+                    </div>
+                  )}
+                  <div className="text-emerald-400/70 text-xs font-mono mt-1.5 flex items-center gap-1">
+                    <Zap size={10} />
+                    +20% бонуса при пополнении
+                  </div>
                 </div>
               </div>
-              <div className="mt-5 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
-                <input
-                  type="number"
-                  min="10"
-                  step="50"
-                  value={topupAmount}
-                  onChange={(e) => setTopupAmount(e.target.value)}
-                  className="w-full rounded-xl px-4 py-2.5 text-white text-sm outline-none"
-                  style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
-                  placeholder="Сумма пополнения"
-                />
-                <button
-                  onClick={handleTopup}
-                  disabled={topupLoading}
-                  className="px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 disabled:opacity-50"
-                  style={{ backgroundColor: 'rgba(245,158,11,0.14)', color: '#FDE68A' }}
-                >
-                  {topupLoading ? 'Создаём...' : 'Пополнить через ЮKassa'}
-                </button>
+              <div className="mt-5 space-y-2">
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+                  <input
+                    type="number"
+                    min="10"
+                    step="50"
+                    value={topupAmount}
+                    onChange={(e) => setTopupAmount(e.target.value)}
+                    className="w-full rounded-xl px-4 py-2.5 text-white text-sm outline-none"
+                    style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+                    placeholder="Сумма пополнения"
+                  />
+                  <button
+                    onClick={handleTopup}
+                    disabled={topupLoading}
+                    className="px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 disabled:opacity-50 btn-accent"
+                    style={{ backgroundColor: 'rgba(245,158,11,0.28)', border: '1px solid rgba(251,191,36,0.55)' }}
+                  >
+                    {topupLoading ? 'Создаём...' : 'Пополнить через ЮKassa'}
+                  </button>
+                </div>
+                {Number(topupAmount) >= 10 && (
+                  <div className="text-emerald-400/60 text-xs font-mono text-right">
+                    +{Math.floor(Number(topupAmount) * 0.2)} ₽ бонуса · всего {Number(topupAmount) + Math.floor(Number(topupAmount) * 0.2)} ₽
+                  </div>
+                )}
               </div>
               {topupError && <div className="mt-2 text-red-300 text-xs">{topupError}</div>}
+
+              {/* Promo code */}
+              <div className="mt-5 pt-5" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                <h3 className="text-white/60 text-xs font-semibold mb-3">Промокод</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+                  <input
+                    type="text"
+                    value={promoCode}
+                    onChange={(e) => { setPromoCode(e.target.value.toUpperCase()); setPromoError(''); setPromoResult(''); }}
+                    className="w-full rounded-xl px-4 py-2.5 text-white text-sm outline-none"
+                    style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+                    placeholder="Введите промокод"
+                    onKeyDown={(e) => { if (e.key === 'Enter') handlePromoApply(); }}
+                  />
+                  <button
+                    onClick={handlePromoApply}
+                    disabled={promoLoading || !promoCode.trim()}
+                    className="px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 disabled:opacity-40 btn-accent"
+                    style={{ backgroundColor: 'rgba(139,92,246,0.28)', border: '1px solid rgba(167,139,250,0.55)' }}
+                  >
+                    {promoLoading ? 'Проверка...' : 'Активировать'}
+                  </button>
+                </div>
+                {promoResult && <div className="mt-2 text-emerald-400 text-xs">{promoResult}</div>}
+                {promoError && <div className="mt-2 text-red-300 text-xs">{promoError}</div>}
+              </div>
             </div>
 
             {/* Quick actions */}
@@ -335,7 +565,15 @@ export default function AccountPage() {
               <h2 className="text-white text-base font-semibold mb-4">Быстрые действия</h2>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => navigate('/models')}
+                  onClick={() => navigate('/account/settings')}
+                  className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 "
+                  style={{ color: 'rgba(255,255,255,0.7)' }}
+                >
+                  <SlidersHorizontal size={14} className="inline mr-1.5" />
+                  Настройки
+                </button>
+                <button
+                  onClick={() => navigate('/models/text', { state: { view: 'catalog' } })}
                   className="px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 "
                   style={{ color: 'rgba(255,255,255,0.7)' }}
                 >
@@ -362,6 +600,7 @@ export default function AccountPage() {
           </div>
         </div>
       </div>
+      <AppMobileNav />
     </div>
   );
 }

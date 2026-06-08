@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" fill="none">
+  <rect width="400" height="300" fill="#c8dcc4"/>
+  <rect width="400" height="300" fill="url(#wash)" opacity="0.5"/>
+  <defs>
+    <linearGradient id="wash" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8f0e6"/>
+      <stop offset="100%" stop-color="#a8c4a0"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="20" width="352" height="36" rx="18" fill="rgba(255,255,255,0.7)" stroke="rgba(255,255,255,0.8)"/>
+  <text x="44" y="42" fill="#2d3a2a" font-family="system-ui,sans-serif" font-size="12" font-weight="600">LinkFlow</text>
+  <rect x="280" y="28" width="80" height="20" rx="10" fill="#1f2a1d"/>
+  <text x="320" y="42" text-anchor="middle" fill="#fff" font-family="system-ui,sans-serif" font-size="8">Try it Live</text>
+  <text x="200" y="130" text-anchor="middle" fill="#336443" font-family="system-ui,sans-serif" font-size="22" font-weight="400">Close the rift</text>
+  <text x="200" y="158" text-anchor="middle" fill="#85AB8B" font-family="system-ui,sans-serif" font-size="20">linking signals</text>
+  <rect x="32" y="210" width="140" height="56" rx="12" fill="rgba(255,255,255,0.15)"/>
+  <text x="48" y="232" fill="#3d5638" font-family="system-ui,sans-serif" font-size="9" font-weight="600">FluxEngine</text>
+  <rect x="48" y="244" width="72" height="16" rx="8" fill="#3d5638"/>
+</svg>

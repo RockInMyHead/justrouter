@@ -1,0 +1,11 @@
+# Insert inside `route { }` BEFORE `root * /var/www/justrouter.ru`
+
+@demos path /demos/*
+handle @demos {
+	root * /var/www/justrouter.ru
+	try_files {path} {path}/index.html
+	file_server
+}
+
+# Also update main site fallback to:
+# try_files {path} {path}/index.html /index.html

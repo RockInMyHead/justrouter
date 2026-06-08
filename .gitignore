@@ -1,8 +1,26 @@
 node_modules
 dist
+coverage
+.vite
+
+# Runtime and secrets
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
 .env
+.env.*
+!.env.example
+
+# Local machine artifacts
 .DS_Store
 *.log
+*.bak
+backups/
+
+# Generated/local media dumps
+ChatGPT Image *.png
+
+# Optional generated demo output; keep source demos in demos/
+public/demos/*/assets/
+agent2.0/

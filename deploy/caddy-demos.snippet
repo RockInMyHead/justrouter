@@ -1,0 +1,44 @@
+# Insert inside the `route { }` block of /etc/caddy/Caddyfile,
+# BEFORE the main `root * /var/www/justrouter.ru` handler.
+
+@demo_slides host slides.justrouter.ru
+handle @demo_slides {
+	root * /var/www/demos/slides
+	try_files {path} /index.html
+	file_server
+}
+
+@demo_neon host neon.justrouter.ru
+handle @demo_neon {
+	root * /var/www/demos/neon
+	try_files {path} /index.html
+	file_server
+}
+
+@demo_bloom host bloom.justrouter.ru
+handle @demo_bloom {
+	root * /var/www/demos/bloom
+	try_files {path} /index.html
+	file_server
+}
+
+@demo_wealth host wealth.justrouter.ru
+handle @demo_wealth {
+	root * /var/www/demos/wealth
+	try_files {path} /index.html
+	file_server
+}
+
+@demo_design host design.justrouter.ru
+handle @demo_design {
+	root * /var/www/demos/design
+	try_files {path} {path}/index.html
+	file_server
+}
+
+@demo_kinetic host kinetic.justrouter.ru
+handle @demo_kinetic {
+	root * /var/www/demos/kinetic
+	try_files {path} {path}/index.html
+	file_server
+}

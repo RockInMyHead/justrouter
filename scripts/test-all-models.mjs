@@ -1,10 +1,15 @@
 import fs from 'fs';
 
-const API_KEY = process.env.JUSTROUTER_API_KEY || 'jr_4c4e2d8dc4d37887d4856e2ee0dac292d2968c9ab5890d78';
+const API_KEY = process.env.JUSTROUTER_API_KEY;
 const BASE_URL = process.env.JUSTROUTER_BASE_URL || 'https://justrouter.ru';
 const CONCURRENCY = Number(process.env.CONCURRENCY || 6);
 const TIMEOUT_MS = Number(process.env.TIMEOUT_MS || 45000);
-const PROMPT = 'Ответь одним словом: да';
+const PROMPT = process.env.TEST_PROMPT || 'Ответь одним словом: да';
+
+if (!API_KEY) {
+  console.error('Set JUSTROUTER_API_KEY before running model tests.');
+  process.exit(1);
+}
 
 async function fetchModels() {
   const res = await fetch(`${BASE_URL}/api/models`);

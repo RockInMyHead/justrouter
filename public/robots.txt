@@ -1,0 +1,19 @@
+User-agent: *
+Disallow: /admin
+Disallow: /account
+Disallow: /api/
+
+User-agent: Googlebot
+Disallow: /admin
+Disallow: /account
+Disallow: /api/
+
+User-agent: Yandex
+Disallow: /admin
+Disallow: /account
+Disallow: /api/
+Clean-param: ref /
+Clean-param: utm_source&utm_medium&utm_campaign /
+Host: https://justrouter.ru
+
+Sitemap: https://justrouter.ru/sitemap.xml

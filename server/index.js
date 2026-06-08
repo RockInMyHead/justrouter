@@ -8,26 +8,195 @@ import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import db from './db.js';
-import { syncOpenRouterModels } from './openrouter-models.js';
+import { checkpointDatabase } from './db.js';
+import { syncOpenRouterModels, countModelsNeedingRussianTranslation, parseStoredVideoMeta, enrichModelVideoMetaRow, fetchOpenRouterVideoMeta } from './openrouter-models.js';
+import {
+  submitOpenRouterVideoJob,
+  pollOpenRouterVideoJob,
+  fetchOpenRouterVideoContent,
+  estimateVideoCostRub,
+  ensureOpenRouterCreditsForVideo,
+  formatOpenRouterClientError,
+} from './openrouter-video.js';
+import {
+  generateOpenRouterImage,
+  imageCostRubFromUsage,
+  estimateImageCostRub,
+} from './openrouter-image.js';
+import {
+  normalizeImageList,
+  normalizeStructuredImages,
+  summarizeImagesForLog,
+  validateVideoRequestForModel,
+} from './media-utils.js';
+import {
+  getFreeRemaining,
+  isFreeRequest,
+  costRubFromOpenRouterUsage,
+  estimateTextMessageCostRub,
+  chargeUserBalance,
+  hasTierCoverage,
+  getActiveTierSubscription,
+  TIER_DEFINITIONS,
+  assertSufficientBalance,
+  getPublicBalance,
+  getTotalBalance,
+  getWallet,
+  toPublicUser,
+  getAdminFinanceStats,
+  getUserFinanceStats,
+  sumUserFinanceStats,
+  PRICE_MULTIPLIER,
+} from './billing.js';
+import {
+  getOrCreateConversation,
+  getConversationMessages,
+  generateSupportAssistantReply,
+  formatConversationRow,
+  getGuestToken,
+} from './support.js';
+import {
+  applyReferralOnSignup,
+  backfillReferralCodes,
+  ensureUserReferralCode,
+  findReferrerByCode,
+  getReferralStats,
+  isReferralPromoActive,
+  normalizeReferralCode,
+  REFERRAL_BONUS_RUB,
+  getAdminReferralOverview,
+  getAdminUserReferralInfo,
+  creditReferralForTopup,
+} from './referrals.js';
+import { renderSeoHtml } from './seo-html.js';
+import {
+  processAgentMessage,
+  generateCeoReport,
+  clearConversation,
+  listActiveConversations,
+  ADMIN_SYSTEM_PROMPT,
+  OPENCLAW_SYSTEM_PROMPT,
+} from './justrouter-agent.js';
+import {
+  getAnalyticsSummary,
+  getHeatmapData,
+  getScrollDepthData,
+  getMouseHeatmapData,
+  getRageClickData,
+  getSessionAnalytics,
+  recordAnalyticsEvent,
+  recordFunnelEvent,
+  storeAnalyticsReport,
+} from './openclaw-analytics.js';
+import {
+  generateAndStoreOpenClawReport,
+  getLatestOpenClawReport,
+} from './openclaw-reports.js';
+import {
+  formatOpenClawTelegramReport,
+  broadcastOpenClawReportToAdmins,
+} from './openclaw-telegram.js';
+import {
+  buildOpenClawActionPlan,
+  buildOpenClawAgentMessage,
+  buildOpenClawContext,
+  shouldAttachOpenClawContext,
+} from './openclaw-agent.js';
+import { isDisposableEmail } from '../shared/disposable-domains.js';
+import { getSiteById } from './site-catalog.js';
+import { syncBlogPostsFromDb } from '../shared/blog-posts.js';
+import { isNoIndexPath } from './http-policy.js';
+import { registerContentRoutes } from './routes/content.js';
+import { registerSpaRoutes } from './routes/spa.js';
+import { createRateLimit } from './rate-limit.js';
+import { requireJsonFields, requirePositiveAmount } from './request-validation.js';
+import { logger } from './logger.js';
+
+function normalizeEmail(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[.,;]+$/g, '');
+}
 
 const BCRYPT_ROUNDS = 10;
+const ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || 'admin@justrouter.ru');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
+
+if (process.env.NODE_ENV === 'production' && ADMIN_PASSWORD === 'admin' && !process.env.ADMIN_PASSWORD) {
+  console.warn('[security] Default ADMIN_PASSWORD blocked in production — set ADMIN_PASSWORD env var');
+}
+
+async function ensureAdminAccount() {
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(ADMIN_EMAIL);
+  if (existing) {
+    db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?').run(existing.id);
+    return;
+  }
+
+  if (!process.env.ADMIN_PASSWORD) {
+    console.warn(`[admin] Admin account ${ADMIN_EMAIL} not found and ADMIN_PASSWORD is not set`);
+    return;
+  }
+
+  if (process.env.NODE_ENV === 'production' && ADMIN_PASSWORD === 'admin') {
+    console.warn('[admin] Refusing to create admin with default password in production');
+    return;
+  }
+
+  const hashedPw = await bcrypt.hash(ADMIN_PASSWORD, BCRYPT_ROUNDS);
+  db.prepare(`
+    INSERT INTO users (email, password, name, balance, is_admin)
+    VALUES (?, ?, 'Admin', 0, 1)
+  `).run(ADMIN_EMAIL, hashedPw);
+  console.log(`[admin] Created admin account ${ADMIN_EMAIL}`);
+}
+
+function resolveAdminLoginEmail(value) {
+  const login = String(value || '').trim().toLowerCase();
+  if (!login) return '';
+  if (login.includes('@')) return normalizeEmail(login);
+  if (login === 'admin' || login === (process.env.ADMIN_USERNAME || 'admin')) return ADMIN_EMAIL;
+  return normalizeEmail(login);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const authRateLimit = createRateLimit({ windowMs: 15 * 60 * 1000, max: 20, keyPrefix: 'auth' });
+const mediaRateLimit = createRateLimit({ windowMs: 60 * 1000, max: 30, keyPrefix: 'media' });
+const publicWriteRateLimit = createRateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'public-write' });
+
+app.use((req, res, next) => {
+  if (isNoIndexPath(req.path)) {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  }
+  next();
+});
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || 'JustRouterBot';
+const TELEGRAM_WEBHOOK_URL = process.env.TELEGRAM_WEBHOOK_URL || `${process.env.SITE_URL || 'https://justrouter.ru'}/api/telegram/webhook`;
 const TELEGRAM_PAYMENT_PROVIDER_TOKEN = process.env.TELEGRAM_PAYMENT_PROVIDER_TOKEN;
 const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD || 100);
+const JUSTROUTER_AGENT_ENABLED = process.env.JUSTROUTER_AGENT_ENABLED !== 'false';
+const JUSTROUTER_CEO_CHAT_ID = process.env.JUSTROUTER_CEO_CHAT_ID;
+const JUSTROUTER_ADMIN_CHAT_ID = process.env.JUSTROUTER_ADMIN_CHAT_ID;
 const EMAIL_CODE_TTL_MINUTES = Number(process.env.EMAIL_CODE_TTL_MINUTES || 15);
 const YOOKASSA_SHOP_ID = process.env.YOOKASSA_SHOP_ID;
 const YOOKASSA_SECRET_KEY = process.env.YOOKASSA_SECRET_KEY;
 const YOOKASSA_RETURN_URL = process.env.YOOKASSA_RETURN_URL || 'https://justrouter.ru/account';
+
+// ── Subscription pricing ──
+const SUBSCRIPTION_PRICES = {
+  base: { monthly: 499, yearly: 4990 },
+  pro: { monthly: 1499, yearly: 14990 },
+};
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_PROXY_URL = process.env.OPENROUTER_PROXY_URL;
+const SUPPORT_MODEL_ID = process.env.SUPPORT_MODEL_ID || 'google/gemini-2.5-flash';
 const OPENROUTER_MODEL_MAP = (() => {
   try {
     return JSON.parse(process.env.OPENROUTER_MODEL_MAP || '{}');
@@ -46,8 +215,53 @@ const mailTransporter = process.env.SMTP_USER && process.env.SMTP_PASS
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
+      pool: true,
+      maxConnections: 2,
+      maxMessages: 100,
+      connectionTimeout: 8_000,
+      greetingTimeout: 8_000,
+      socketTimeout: 15_000,
     })
   : null;
+
+if (mailTransporter) {
+  mailTransporter.verify().then(() => {
+    console.log('[email] SMTP pool ready');
+  }).catch((e) => {
+    console.error('[email] SMTP verify failed', e.message);
+  });
+}
+
+function queueVerificationEmail(email, code) {
+  sendVerificationEmail(email, code).catch((e) => {
+    console.error('[email] verification send failed (background)', {
+      email,
+      error: e.message,
+      code: e.code,
+    });
+  });
+}
+
+async function sendVerificationEmailWithTimeout(email, code, timeoutMs = 12_000) {
+  let timeoutId;
+  const sendTask = sendVerificationEmail(email, code);
+  const timeoutTask = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('SMTP timeout')), timeoutMs);
+  });
+
+  try {
+    await Promise.race([sendTask, timeoutTask]);
+    return true;
+  } catch (e) {
+    if (e.message === 'SMTP timeout') {
+      console.warn('[email] SMTP handoff slow, continuing in background', { email });
+      return false;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 async function sendVerificationEmail(email, code) {
   if (!mailTransporter) {
@@ -60,88 +274,27 @@ async function sendVerificationEmail(email, code) {
     from: `"JustRouter" <${fromAddress}>`,
     to: email,
     subject: 'Код подтверждения JustRouter',
-    text: `Ваш код подтверждения JustRouter: ${code}\n\nКод действует ${EMAIL_CODE_TTL_MINUTES} минут.`,
+    priority: 'high',
+    text: `Ваш код подтверждения JustRouter: ${code}\n\nКод действует ${EMAIL_CODE_TTL_MINUTES} минут.\n\nЕсли вы не регистрировались — проигнорируйте письмо.`,
     html: `
       <!doctype html>
       <html lang="ru">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <meta name="color-scheme" content="dark light">
-          <meta name="supported-color-schemes" content="dark light">
-          <title>Код подтверждения JustRouter</title>
-        </head>
-        <body style="margin:0;padding:0;background:#2f2f2f;font-family:Inter,Arial,sans-serif;color:#f7f1e8;">
-          <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
-            ${previewText}
+        <body style="margin:0;padding:24px;background:#2f2f2f;font-family:Inter,Arial,sans-serif;color:#f7f1e8;">
+          <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${previewText}</div>
+          <div style="max-width:520px;margin:0 auto;background:#3a3a3a;border:1px solid rgba(247,241,232,0.14);border-radius:24px;padding:28px;">
+            <div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:rgba(247,241,232,.55);margin-bottom:10px;">JustRouter</div>
+            <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2;color:#f7f1e8;">Подтверждение email</h1>
+            <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:rgba(247,241,232,.72);">
+              Введите код на странице регистрации, чтобы завершить создание аккаунта.
+            </p>
+            <div style="padding:20px;border-radius:18px;background:#f7f1e8;text-align:center;">
+              <div style="font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#6f6f6f;margin-bottom:8px;">Код</div>
+              <div style="font-family:Consolas,monospace;font-size:36px;font-weight:800;letter-spacing:.28em;color:#4f4f4f;">${code}</div>
+                              </div>
+            <p style="margin:18px 0 0;font-size:13px;line-height:1.6;color:rgba(247,241,232,.55);">
+              Код действует ${EMAIL_CODE_TTL_MINUTES} минут. Если вы не регистрировались — просто проигнорируйте письмо.
+            </p>
           </div>
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:linear-gradient(135deg,#2f2f2f 0%,#3a3a3a 46%,#262626 100%);padding:32px 14px;">
-            <tr>
-              <td align="center">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;border-collapse:separate;border-spacing:0;">
-                  <tr>
-                    <td style="padding:0 0 18px 0;text-align:center;">
-                      <div style="display:inline-block;padding:10px 16px;border-radius:999px;background:rgba(247,241,232,0.08);border:1px solid rgba(247,241,232,0.14);font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#f7f1e8;">
-                        JustRouter
-                      </div>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="border-radius:28px;overflow:hidden;background:#3a3a3a;border:1px solid rgba(247,241,232,0.14);box-shadow:0 24px 70px rgba(0,0,0,.35);">
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                        <tr>
-                          <td style="padding:34px 30px 18px 30px;background:radial-gradient(circle at 18% 0%,rgba(139,92,246,.34),transparent 34%),radial-gradient(circle at 88% 10%,rgba(16,185,129,.22),transparent 32%);">
-                            <div style="font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:rgba(247,241,232,.62);margin-bottom:12px;">
-                              Подтверждение email
-                            </div>
-                            <h1 style="margin:0;font-size:30px;line-height:1.15;color:#f7f1e8;font-weight:700;">
-                              Ваш код доступа
-                            </h1>
-                            <p style="margin:14px 0 0 0;font-size:15px;line-height:1.65;color:rgba(247,241,232,.72);">
-                              Введите этот код на странице регистрации, чтобы завершить создание аккаунта JustRouter.
-                            </p>
-                          </td>
-                        </tr>
-                        <tr>
-                          <td style="padding:12px 30px 30px 30px;">
-                            <div style="margin:10px 0 22px 0;padding:22px 18px;border-radius:22px;background:#f7f1e8;text-align:center;border:1px solid rgba(255,255,255,.45);">
-                              <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#6f6f6f;margin-bottom:10px;">
-                                Код подтверждения
-                              </div>
-                              <div style="font-family:'SFMono-Regular','Roboto Mono',Consolas,monospace;font-size:40px;line-height:1;font-weight:800;letter-spacing:.32em;color:#4f4f4f;">
-                                ${code}
-                              </div>
-                            </div>
-
-                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 22px 0;">
-                              <tr>
-                                <td style="padding:16px;border-radius:18px;background:rgba(247,241,232,.07);border:1px solid rgba(247,241,232,.1);">
-                                  <div style="font-size:14px;line-height:1.6;color:rgba(247,241,232,.78);">
-                                    Код действует <strong style="color:#f7f1e8;">${EMAIL_CODE_TTL_MINUTES} минут</strong>. Если вы не запрашивали регистрацию, просто проигнорируйте это письмо.
-                                  </div>
-                                </td>
-                              </tr>
-                            </table>
-
-                            <div style="height:1px;background:rgba(247,241,232,.1);margin:0 0 20px 0;"></div>
-
-                            <p style="margin:0;font-size:12px;line-height:1.7;color:rgba(247,241,232,.48);">
-                              JustRouter — единый API для AI-моделей. Это автоматическое служебное письмо, отвечать на него не нужно.
-                            </p>
-                          </td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="padding:18px 8px 0 8px;text-align:center;font-size:11px;line-height:1.6;color:rgba(247,241,232,.38);">
-                      © 2026 JustRouter · noreply@justrouter.ru
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </table>
         </body>
       </html>
     `,
@@ -162,7 +315,20 @@ app.use(cors({
     : '*',
   credentials: true,
 }));
-app.use(express.json());
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '20mb' }));
+
+function normalizeClientIp(ip) {
+  return String(ip || '').replace(/^::ffff:/, '');
+}
+
+function isYookassaIp(ip) {
+  const normalized = normalizeClientIp(ip);
+  return normalized.startsWith('77.75.153.')
+    || normalized.startsWith('77.75.154.')
+    || normalized.startsWith('185.71.76.')
+    || normalized.startsWith('185.71.77.');
+}
 
 // ── Rate limiter (simple in-memory) ────────────────────
 const rateLimitMap = new Map();
@@ -182,60 +348,141 @@ setInterval(() => {
   for (const [key, entry] of rateLimitMap) {
     if (now - entry.start > 120000) rateLimitMap.delete(key);
   }
-}, 300000);
+}, 60000);
 
-// Serve static files from dist in production
-const distPath = join(__dirname, '..', 'dist');
-app.use(express.static(distPath));
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
 
 // ── Auth ──────────────────────────────────────────────
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authRateLimit, requireJsonFields(['email', 'password', 'name']), async (req, res) => {
   const ip = req.ip || req.connection.remoteAddress;
   if (!rateLimit(`register:${ip}`, 5, 60000)) {
     return res.status(429).json({ error: 'Слишком много запросов. Попробуйте через минуту.' });
   }
-  const { email, password, name, marketing_enabled = true } = req.body;
+  const { email, password, name, marketing_enabled = true, referral_code, ref } = req.body;
   if (!email || !password || !name) return res.status(400).json({ error: 'Заполните все поля' });
   if (password.length < 6) return res.status(400).json({ error: 'Пароль должен быть минимум 6 символов' });
   if (name.length > 50) return res.status(400).json({ error: 'Имя не может быть длиннее 50 символов' });
 
+  // Block disposable / temporary email domains
+  if (isDisposableEmail(email)) {
+    return res.status(403).json({ error: 'Регистрация с одноразовых почтовых адресов запрещена. Используйте постоянный email.' });
+  }
+
+  const normalizedReferralCodeRaw = normalizeReferralCode(referral_code || ref);
+  const normalizedReferralCode = normalizedReferralCodeRaw && findReferrerByCode(db, normalizedReferralCodeRaw)
+    ? normalizedReferralCodeRaw
+    : null;
+
   try {
-    const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedEmail = normalizeEmail(email);
     const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
     if (existing) return res.status(409).json({ error: 'Пользователь с таким email уже существует' });
 
+    // Email verification flow — store code, send email, create user after verification
     const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const code = String(crypto.randomInt(100000, 1000000));
     const expiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MINUTES * 60 * 1000).toISOString();
 
-    db.prepare('UPDATE email_verification_codes SET used_at = datetime(\'now\') WHERE email = ? AND used_at IS NULL').run(normalizedEmail);
+    // Remove old unused codes for this email
+    db.prepare('DELETE FROM email_verification_codes WHERE email = ? AND used_at IS NULL').run(normalizedEmail);
+
     db.prepare(`
-      INSERT INTO email_verification_codes (email, name, password_hash, code, marketing_enabled, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(normalizedEmail, name.trim(), hashedPassword, code, marketing_enabled ? 1 : 0, expiresAt);
+      INSERT INTO email_verification_codes (email, name, password_hash, code, marketing_enabled, referral_code, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(normalizedEmail, name.trim(), hashedPassword, code, marketing_enabled ? 1 : 0, normalizedReferralCode, expiresAt);
 
-    await sendVerificationEmail(normalizedEmail, code);
+    let emailSent = false;
+    try {
+      emailSent = await sendVerificationEmailWithTimeout(normalizedEmail, code);
+    } catch (e) {
+      console.error('[auth] email error during register:', e.message);
+      queueVerificationEmail(normalizedEmail, code);
+    }
 
-    res.json({ pending_verification: true, email: normalizedEmail, message: 'Код подтверждения отправлен на email' });
-  } catch (e) {
-    console.error('[email] verification send failed', {
-      email,
-      error: e.message,
-      code: e.code,
-      response: e.response,
+    if (!emailSent && !mailTransporter) {
+      return res.status(503).json({ error: 'Почта для отправки кодов не настроена' });
+    }
+
+    console.log(`[auth] verification code sent to ${normalizedEmail}`);
+    try {
+      recordAnalyticsEvent(db, {
+        visitor_id: `server:register:${Buffer.from(normalizedEmail).toString('base64').slice(0, 20)}`,
+        event_type: 'funnel',
+        path: '/api/auth/register',
+        text: 'registration_code_sent',
+        metadata: JSON.stringify({ step: 'registration_code_sent', email_domain: normalizedEmail.split('@')[1], has_referral: !!normalizedReferralCode }),
+      });
+    } catch (e) { /* analytics best-effort */ }
+
+    res.json({
+      message: emailSent ? 'Код отправлен на почту' : 'Код отправляется — письмо может прийти в течение 1–2 минут',
+      email: normalizedEmail,
+      email_sent: emailSent,
     });
-    res.status(500).json({ error: e.message === 'SMTP не настроен' ? 'Почта для отправки кодов не настроена' : 'Не удалось отправить код подтверждения' });
+  } catch (e) {
+    console.error('[auth] register failed', { email, error: e.message });
+    res.status(500).json({ error: 'Не удалось создать пользователя. Попробуйте ещё раз.' });
   }
 });
 
-app.post('/api/auth/verify-email', (req, res) => {
+app.post('/api/auth/resend-verification', authRateLimit, requireJsonFields(['email']), async (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress;
+  if (!rateLimit(`resend_verify:${ip}`, 3, 60000)) {
+    return res.status(429).json({ error: 'Слишком много запросов. Попробуйте через минуту.' });
+  }
+
+  const email = normalizeEmail(req.body.email);
+  if (!email) return res.status(400).json({ error: 'Введите email' });
+
+  const verification = db.prepare(`
+    SELECT * FROM email_verification_codes
+    WHERE email = ? AND used_at IS NULL
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(email);
+
+  if (!verification) {
+    return res.status(400).json({ error: 'Регистрация не найдена. Заполните форму заново.' });
+  }
+  if (new Date(verification.expires_at).getTime() < Date.now()) {
+    return res.status(400).json({ error: 'Код истёк. Заполните форму регистрации заново.' });
+  }
+
+  if (!mailTransporter) {
+    return res.status(503).json({ error: 'Почта для отправки кодов не настроена' });
+  }
+
+  const newCode = String(crypto.randomInt(100000, 1000000));
+  const expiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MINUTES * 60 * 1000).toISOString();
+  db.prepare(`
+    UPDATE email_verification_codes
+    SET code = ?, attempts = 0, expires_at = ?
+    WHERE id = ?
+  `).run(newCode, expiresAt, verification.id);
+
+  try {
+    const sentNow = await sendVerificationEmailWithTimeout(email, newCode);
+    res.json({
+      message: sentNow ? 'Код отправлен повторно' : 'Код отправляется — письмо может прийти в течение 1–2 минут',
+      email_sent: sentNow,
+    });
+  } catch (e) {
+    console.error('[email] resend failed', { email, error: e.message });
+    queueVerificationEmail(email, newCode);
+    res.status(503).json({ error: 'Не удалось отправить код. Попробуйте ещё раз через минуту.' });
+  }
+});
+
+app.post('/api/auth/verify-email', authRateLimit, requireJsonFields(['email', 'code']), (req, res) => {
   const ip = req.ip || req.connection.remoteAddress;
   if (!rateLimit(`verify_email:${ip}`, 10, 60000)) {
     return res.status(429).json({ error: 'Слишком много попыток. Попробуйте через минуту.' });
   }
 
-  const email = String(req.body.email || '').trim().toLowerCase();
+  const email = normalizeEmail(req.body.email);
   const code = String(req.body.code || '').trim();
   if (!email || !code) return res.status(400).json({ error: 'Введите email и код подтверждения' });
 
@@ -264,27 +511,65 @@ app.post('/api/auth/verify-email', (req, res) => {
 
     const token = crypto.randomBytes(32).toString('hex');
     const userApiKey = 'jr_' + crypto.randomBytes(24).toString('hex');
-    const result = db.prepare('INSERT INTO users (email, password, name, balance, api_key) VALUES (?, ?, ?, ?, ?)').run(email, verification.password_hash, verification.name, 1000, userApiKey);
-    db.prepare('INSERT INTO sessions (user_id, token) VALUES (?, ?)').run(result.lastInsertRowid, token);
-    db.prepare('UPDATE email_verification_codes SET used_at = datetime(\'now\') WHERE id = ?').run(verification.id);
+
+    const tx = db.transaction(() => {
+        const marked = db.prepare(`
+          UPDATE email_verification_codes
+          SET used_at = datetime('now')
+          WHERE id = ? AND used_at IS NULL
+        `).run(verification.id);
+        if (marked.changes === 0) {
+          const err = new Error('Код уже использован');
+          err.statusCode = 409;
+          throw err;
+        }
+
+        const result = db.prepare(`
+          INSERT INTO users (email, password, name, balance, api_key, marketing_enabled)
+          VALUES (?, ?, ?, 0, ?, ?)
+        `).run(email, verification.password_hash, verification.name, userApiKey, verification.marketing_enabled ? 1 : 0);
+        const userId = result.lastInsertRowid;
+        db.prepare('INSERT INTO sessions (user_id, token) VALUES (?, ?)').run(userId, token);
+
+        ensureUserReferralCode(db, userId);
+
+      if (verification.referral_code) {
+        applyReferralOnSignup(db, {
+          referredUserId: userId,
+          referralCode: verification.referral_code,
+          referredEmail: email,
+        });
+      }
+
+      return userId;
+    });
+
+    const userId = tx();
+    try { recordFunnelEvent(db, 'registration_complete', userId, { email_domain: email.split('@')[1], has_referral: !!verification.referral_code }); } catch (e) { /* analytics best-effort */ }
+
+    const user = toPublicUser(db, {
+      id: userId,
+        email,
+        name: verification.name,
+        api_key: userApiKey,
+        marketing_enabled: Boolean(verification.marketing_enabled),
+    });
 
     res.json({
       token,
-      user: {
-        id: result.lastInsertRowid,
-        email,
-        name: verification.name,
-        balance: 1000,
-        api_key: userApiKey,
-        marketing_enabled: Boolean(verification.marketing_enabled),
-      },
+      user,
+      referral_promo_active: isReferralPromoActive(),
+      referral_bonus_rub: REFERRAL_BONUS_RUB,
     });
   } catch (e) {
+    if (e.statusCode === 409) {
+      return res.status(409).json({ error: e.message });
+    }
     res.status(500).json({ error: 'Ошибка подтверждения регистрации' });
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimit, requireJsonFields(['email', 'password']), async (req, res) => {
   const ip = req.ip || req.connection.remoteAddress;
   if (!rateLimit(`login:${ip}`, 10, 60000)) {
     return res.status(429).json({ error: 'Слишком много запросов. Попробуйте через минуту.' });
@@ -292,8 +577,26 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Заполните все поля' });
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-  if (!user) return res.status(401).json({ error: 'Неверный email или пароль' });
+  const normalizedEmail = normalizeEmail(email);
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail);
+  if (!user) {
+    const pending = db.prepare(`
+      SELECT id FROM email_verification_codes
+      WHERE email = ? AND used_at IS NULL AND datetime(expires_at) > datetime('now')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(normalizedEmail);
+
+    if (pending) {
+      return res.status(403).json({
+        error: 'Подтвердите email — код уже отправлен на почту. Войти можно после подтверждения.',
+        pending_verification: true,
+        email: normalizedEmail,
+      });
+    }
+
+    return res.status(401).json({ error: 'Неверный email или пароль' });
+  }
 
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(401).json({ error: 'Неверный email или пароль' });
@@ -301,7 +604,28 @@ app.post('/api/auth/login', async (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions (user_id, token) VALUES (?, ?)').run(user.id, token);
 
-  res.json({ token, user: { id: user.id, email: user.email, name: user.name, balance: user.balance, api_key: user.api_key } });
+  res.json({
+    token,
+    user: toPublicUser(db, user),
+    referral_promo_active: isReferralPromoActive(),
+    referral_bonus_rub: REFERRAL_BONUS_RUB,
+  });
+});
+
+app.get('/api/referrals/me', authMiddleware, (req, res) => {
+  try {
+    res.json(getReferralStats(db, req.user.id));
+  } catch (e) {
+    console.error('[referrals] stats failed', e);
+    res.status(500).json({ error: 'Не удалось загрузить реферальную программу' });
+  }
+});
+
+app.get('/api/referrals/promo', authMiddleware, (req, res) => {
+  res.json({
+    promo_active: isReferralPromoActive(),
+    bonus_rub: REFERRAL_BONUS_RUB,
+  });
 });
 
 app.get('/api/auth/me', (req, res) => {
@@ -309,13 +633,28 @@ app.get('/api/auth/me', (req, res) => {
   if (!token) return res.status(401).json({ error: 'Не авторизован' });
 
   const session = db.prepare(`
-    SELECT users.id, users.email, users.name, users.balance, users.api_key
+    SELECT users.id, users.email, users.name, users.api_key, users.created_at, users.marketing_enabled
     FROM sessions JOIN users ON sessions.user_id = users.id
     WHERE sessions.token = ?
   `).get(token);
 
   if (!session) return res.status(401).json({ error: 'Сессия не найдена' });
-  res.json(session);
+  res.json(toPublicUser(db, session));
+});
+
+app.patch('/api/auth/settings', authMiddleware, (req, res) => {
+  const { marketing_enabled } = req.body;
+  if (marketing_enabled === undefined) {
+    return res.status(400).json({ error: 'Нет полей для обновления' });
+  }
+
+  db.prepare('UPDATE users SET marketing_enabled = ? WHERE id = ?')
+    .run(marketing_enabled ? 1 : 0, req.user.id);
+
+  const user = db.prepare('SELECT id, email, name, api_key, created_at, marketing_enabled FROM users WHERE id = ?')
+    .get(req.user.id);
+
+  res.json({ user: toPublicUser(db, user) });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -329,20 +668,173 @@ function authMiddleware(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Не авторизован' });
 
   const session = db.prepare(`
-    SELECT users.id, users.email, users.name, users.balance, users.api_key
+    SELECT users.id, users.email, users.name, users.api_key
     FROM sessions JOIN users ON sessions.user_id = users.id
     WHERE sessions.token = ?
   `).get(token);
 
   if (!session) return res.status(401).json({ error: 'Сессия не найдена' });
-  req.user = session;
+  req.user = { ...session, ...getPublicBalance(db, session.id) };
   next();
 }
 
-app.post('/api/billing/yookassa/payment', authMiddleware, async (req, res) => {
+function optionalAuthMiddleware(req, _res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token) {
+    const session = db.prepare(`
+      SELECT users.id, users.email, users.name, users.api_key
+      FROM sessions JOIN users ON sessions.user_id = users.id
+      WHERE sessions.token = ?
+    `).get(token);
+    if (session) {
+      req.user = { ...session, ...getPublicBalance(db, session.id) };
+    }
+  }
+  next();
+}
+
+function resolveSupportGuestToken(req) {
+  return String(req.headers['x-guest-token'] || req.body?.guest_token || '').trim() || null;
+}
+
+function assertSupportConversationAccess(conversation, { userId, guestToken }) {
+  if (!conversation) return false;
+  if (userId) return conversation.user_id === userId;
+  return guestToken && conversation.guest_token === guestToken;
+}
+
+// ── Support chat ─────────────────────────────────────────
+
+app.get('/api/support/conversation', optionalAuthMiddleware, (req, res) => {
+  const guestToken = resolveSupportGuestToken(req);
+  if (!req.user?.id && !guestToken) {
+    const token = getGuestToken();
+    const conversation = getOrCreateConversation(db, { guestToken: token });
+    return res.json({
+      conversation_id: conversation.id,
+      guest_token: conversation.guest_token,
+      handoff_to_human: !!conversation.handoff_to_human,
+      messages: [],
+    });
+  }
+
+  const conversation = getOrCreateConversation(db, {
+    userId: req.user?.id,
+    guestToken: req.user?.id ? null : guestToken,
+  });
+
+  res.json({
+    conversation_id: conversation.id,
+    guest_token: conversation.guest_token || guestToken,
+    handoff_to_human: !!conversation.handoff_to_human,
+    messages: getConversationMessages(db, conversation.id),
+  });
+});
+
+app.post('/api/support/messages', publicWriteRateLimit, optionalAuthMiddleware, async (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress;
+  if (!rateLimit(`support:${ip}`, 30, 60000)) {
+    return res.status(429).json({ error: 'Слишком много сообщений. Подождите немного.' });
+  }
+
+  const content = String(req.body?.content || '').trim();
+  if (!content) return res.status(400).json({ error: 'Введите сообщение' });
+  if (content.length > 4000) return res.status(400).json({ error: 'Сообщение слишком длинное' });
+
+  const guestToken = resolveSupportGuestToken(req);
+  const conversation = getOrCreateConversation(db, {
+    userId: req.user?.id,
+    guestToken: req.user?.id ? null : guestToken,
+  });
+
+  if (!assertSupportConversationAccess(conversation, { userId: req.user?.id, guestToken })) {
+    return res.status(403).json({ error: 'Нет доступа к этому чату' });
+  }
+
+  const insertUserMessage = db.prepare(`
+    INSERT INTO support_messages (conversation_id, role, content)
+    VALUES (?, 'user', ?)
+  `);
+  const insertAssistantMessage = db.prepare(`
+    INSERT INTO support_messages (conversation_id, role, content)
+    VALUES (?, 'assistant', ?)
+  `);
+  const touchConversation = db.prepare(`
+    UPDATE support_conversations SET updated_at = datetime('now') WHERE id = ?
+  `);
+
+  insertUserMessage.run(conversation.id, content);
+  touchConversation.run(conversation.id);
+
+  const freshConversation = db.prepare('SELECT * FROM support_conversations WHERE id = ?').get(conversation.id);
+  let assistantReply = null;
+
+  if (!freshConversation.handoff_to_human) {
+    try {
+      assistantReply = await generateSupportAssistantReply(db, conversation.id, {
+        apiKey: OPENROUTER_API_KEY,
+        modelIdEnv: SUPPORT_MODEL_ID,
+        modelMap: OPENROUTER_MODEL_MAP,
+        dispatcher: openRouterDispatcher,
+      });
+      insertAssistantMessage.run(conversation.id, assistantReply);
+      touchConversation.run(conversation.id);
+    } catch (e) {
+      console.error('[support] assistant reply failed', e);
+      assistantReply = 'Извините, не удалось получить автоматический ответ. Оператор ответит в этом чате.';
+      insertAssistantMessage.run(conversation.id, assistantReply);
+      db.prepare('UPDATE support_conversations SET handoff_to_human = 1, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(conversation.id);
+      touchConversation.run(conversation.id);
+    }
+  }
+
+  res.json({
+    conversation_id: conversation.id,
+    guest_token: conversation.guest_token || guestToken,
+    handoff_to_human: !!db.prepare('SELECT handoff_to_human FROM support_conversations WHERE id = ?').get(conversation.id)?.handoff_to_human,
+    messages: getConversationMessages(db, conversation.id),
+    assistant_reply: assistantReply,
+  });
+});
+
+app.get('/api/support/messages', optionalAuthMiddleware, (req, res) => {
+  const conversationId = Number(req.query.conversation_id);
+  const guestToken = resolveSupportGuestToken(req);
+  if (!conversationId) return res.status(400).json({ error: 'conversation_id обязателен' });
+
+  const conversation = db.prepare('SELECT * FROM support_conversations WHERE id = ?').get(conversationId);
+  if (!assertSupportConversationAccess(conversation, { userId: req.user?.id, guestToken })) {
+    return res.status(403).json({ error: 'Нет доступа к этому чату' });
+  }
+
+  res.json({
+    conversation_id: conversation.id,
+    handoff_to_human: !!conversation.handoff_to_human,
+    messages: getConversationMessages(db, conversation.id),
+  });
+});
+
+app.post('/api/billing/yookassa/payment', authMiddleware, requirePositiveAmount('amount'), async (req, res) => {
   const amount = Number(req.body.amount);
-  if (!Number.isFinite(amount) || amount < 10) {
-    return res.status(400).json({ error: 'Минимальная сумма пополнения 10 ₽' });
+  const siteId = typeof req.body.site_id === 'string' ? req.body.site_id.trim() : '';
+  const siteTitle = typeof req.body.site_title === 'string' ? req.body.site_title.trim() : '';
+  const isSitePurchase = Boolean(siteId);
+  let minAmount = 10;
+  let maxAmount = 100000;
+  if (isSitePurchase) {
+    minAmount = 0;
+    maxAmount = 5000;
+  }
+
+  if (!Number.isFinite(amount) || amount < minAmount) {
+    return res.status(400).json({
+      error: isSitePurchase ? 'Цена шаблона от 0 ₽ (есть бесплатные)' : 'Минимальная сумма пополнения 10 ₽',
+    });
+  }
+
+  if (isSitePurchase && amount > maxAmount) {
+    return res.status(400).json({ error: 'Максимальная цена шаблона 5000 ₽' });
   }
 
   try {
@@ -350,6 +842,8 @@ app.post('/api/billing/yookassa/payment', authMiddleware, async (req, res) => {
       userId: req.user.id,
       email: req.user.email,
       amount,
+      siteId: siteId || undefined,
+      siteTitle: siteTitle || undefined,
     });
 
     res.json({
@@ -362,7 +856,342 @@ app.post('/api/billing/yookassa/payment', authMiddleware, async (req, res) => {
   }
 });
 
+app.get('/api/billing/site-purchases', authMiddleware, (req, res) => {
+  const rows = db.prepare('SELECT site_id FROM site_purchases WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id);
+  res.json({ site_ids: rows.map((row) => row.site_id) });
+});
+
+app.get('/api/billing/site-prompt/:siteId', authMiddleware, (req, res) => {
+  const siteId = String(req.params.siteId || '').trim();
+  const site = getSiteById(siteId);
+
+  if (!site) {
+    return res.status(404).json({ error: 'Шаблон не найден' });
+  }
+
+  const owned = db.prepare('SELECT id FROM site_purchases WHERE user_id = ? AND site_id = ?').get(req.user.id, siteId);
+  if (!owned) {
+    return res.status(403).json({ error: 'Сначала купите шаблон' });
+  }
+
+  res.json({ site_id: siteId, prompt: site.promptRu });
+});
+
+app.post('/api/billing/site-purchase', authMiddleware, (req, res) => {
+  const siteId = typeof req.body.site_id === 'string' ? req.body.site_id.trim() : '';
+  const site = getSiteById(siteId);
+
+  if (!site) {
+    return res.status(404).json({ error: 'Шаблон не найден' });
+  }
+
+  const owned = db.prepare('SELECT id FROM site_purchases WHERE user_id = ? AND site_id = ?').get(req.user.id, siteId);
+  if (owned) {
+    const { balance } = getPublicBalance(db, req.user.id);
+    return res.json({
+      already_owned: true,
+      site_id: siteId,
+      prompt: site.promptRu,
+      balance,
+    });
+  }
+
+  try {
+    if (site.priceRub > 0) {
+      chargeUserBalance(db, req.user.id, site.priceRub, `Покупка шаблона «${site.titleRu}»`);
+    }
+    db.prepare('INSERT INTO site_purchases (user_id, site_id, amount) VALUES (?, ?, ?)').run(req.user.id, siteId, site.priceRub);
+    const { balance } = getPublicBalance(db, req.user.id);
+    res.json({
+      site_id: siteId,
+      prompt: site.promptRu,
+      cost: site.priceRub,
+      balance,
+    });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message || 'Не удалось списать средства' });
+  }
+});
+
+// ── Subscriptions ──
+
+app.post('/api/billing/subscription/create', authMiddleware, async (req, res) => {
+  const { plan_type, period } = req.body;
+  const validPlans = ['base', 'pro'];
+  const validPeriods = ['monthly', 'yearly'];
+
+  if (!validPlans.includes(plan_type) || !validPeriods.includes(period)) {
+    return res.status(400).json({ error: 'Некорректный тариф или период' });
+  }
+
+  if (!YOOKASSA_SHOP_ID || !YOOKASSA_SECRET_KEY) {
+    return res.status(503).json({ error: 'ЮKassa не настроена' });
+  }
+
+  const amount = SUBSCRIPTION_PRICES[plan_type][period];
+  const description = `Подписка ${plan_type === 'base' ? 'Base' : 'Pro'} — ${period === 'monthly' ? 'ежемесячно' : 'ежегодно'}`;
+  const idempotenceKey = crypto.randomUUID();
+
+  try {
+    const payload = {
+      amount: { value: amount.toFixed(2), currency: 'RUB' },
+      capture: true,
+      confirmation: { type: 'redirect', return_url: YOOKASSA_RETURN_URL },
+      description: `${description} — ${formatRub(amount)}`,
+      metadata: {
+        user_id: String(req.user.id),
+        source: 'subscription',
+        plan_type,
+        period,
+      },
+      receipt: {
+        customer: { email: req.user.email },
+        items: [
+          {
+            description,
+            quantity: '1.00',
+            amount: { value: amount.toFixed(2), currency: 'RUB' },
+            vat_code: 1,
+            payment_mode: 'full_payment',
+            payment_subject: 'service',
+          },
+        ],
+      },
+    };
+
+    const response = await fetch('https://api.yookassa.ru/v3/payments', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotence-Key': idempotenceKey,
+        Authorization: yookassaAuthHeader(),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.error('[subscription] create payment failed', data);
+      throw new Error(data?.description || 'Не удалось создать платёж ЮKassa');
+    }
+
+    // Create yookassa_payments record
+    const ypResult = db.prepare(`
+      INSERT INTO yookassa_payments (user_id, payment_id, idempotence_key, amount, status, confirmation_url, raw_payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(req.user.id, data.id, idempotenceKey, amount, data.status || 'pending', data.confirmation?.confirmation_url || null, JSON.stringify(data));
+
+    // Create pending subscription record linked to this payment
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + (period === 'monthly' ? 30 : 365));
+
+    db.prepare(`
+      INSERT INTO subscriptions (user_id, plan_type, period, status, end_date, yookassa_payment_id)
+      VALUES (?, ?, ?, 'pending', ?, ?)
+    `).run(req.user.id, plan_type, period, endDate.toISOString(), data.id);
+
+    // Link yookassa_payment to subscription
+    db.prepare('UPDATE yookassa_payments SET subscription_id = last_insert_rowid() WHERE id = ?').run(ypResult.lastInsertRowid);
+
+    res.json({
+      payment_id: data.id,
+      status: data.status,
+      confirmation_url: data.confirmation?.confirmation_url,
+      plan_type,
+      period,
+      amount,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Ошибка создания подписки' });
+  }
+});
+
+app.get('/api/billing/subscription/status', authMiddleware, (req, res) => {
+  const active = db.prepare(`
+    SELECT id, plan_type, period, status, start_date, end_date, auto_renew
+    FROM subscriptions
+    WHERE user_id = ? AND status = 'active' AND end_date > datetime('now')
+    ORDER BY end_date DESC
+    LIMIT 1
+  `).get(req.user.id);
+
+  const pending = db.prepare(`
+    SELECT id, plan_type, period, status, created_at, end_date
+    FROM subscriptions
+    WHERE user_id = ? AND status = 'pending'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(req.user.id);
+
+  res.json({ active, pending });
+});
+
+app.post('/api/billing/subscription/cancel', authMiddleware, (req, res) => {
+  const sub = db.prepare(`
+    SELECT id, auto_renew FROM subscriptions
+    WHERE user_id = ? AND status = 'active' AND end_date > datetime('now')
+    ORDER BY end_date DESC LIMIT 1
+  `).get(req.user.id);
+
+  if (!sub) {
+    return res.status(404).json({ error: 'Нет активной подписки' });
+  }
+
+  db.prepare('UPDATE subscriptions SET auto_renew = 0, updated_at = datetime(\'now\') WHERE id = ?').run(sub.id);
+  res.json({ ok: true, message: 'Автопродление отключено. Подписка действует до конца оплаченного периода.' });
+});
+
+// ── Tier subscription: purchase one-time unlimited access ──
+app.post('/api/billing/subscription/tier', authMiddleware, async (req, res) => {
+  const { tier } = req.body;
+  const validTiers = ['starter', 'standard', 'premium'];
+  if (!validTiers.includes(tier)) {
+    return res.status(400).json({ error: 'Некорректный тариф. Доступно: starter, standard, premium' });
+  }
+  if (!YOOKASSA_SHOP_ID || !YOOKASSA_SECRET_KEY) {
+    return res.status(503).json({ error: 'ЮKassa не настроена' });
+  }
+
+  const tierDef = TIER_DEFINITIONS[tier];
+  const amount = tierDef.price;
+  const description = 'Безлимит ' + tierDef.label;
+  const idempotenceKey = crypto.randomUUID();
+
+  try {
+    const payload = {
+      amount: { value: amount.toFixed(2), currency: 'RUB' },
+      capture: true,
+      confirmation: { type: 'redirect', return_url: YOOKASSA_RETURN_URL },
+      description: description + ' — ' + formatRub(amount),
+      metadata: {
+        user_id: String(req.user.id),
+        source: 'tier_subscription',
+        tier_subscription: tier,
+      },
+      receipt: {
+        customer: { email: req.user.email },
+        items: [
+          {
+            description,
+            quantity: '1.00',
+            amount: { value: amount.toFixed(2), currency: 'RUB' },
+            vat_code: 1,
+            payment_mode: 'full_payment',
+            payment_subject: 'service',
+          },
+        ],
+      },
+    };
+
+    const response = await fetch('https://api.yookassa.ru/v3/payments', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotence-Key': idempotenceKey,
+        Authorization: yookassaAuthHeader(),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.error('[tier-subscription] create payment failed', data);
+      throw new Error(data?.description || 'Не удалось создать платёж ЮKassa');
+    }
+
+    const ypResult = db.prepare(`
+      INSERT INTO yookassa_payments (user_id, payment_id, idempotence_key, amount, status, confirmation_url, raw_payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(req.user.id, data.id, idempotenceKey, amount, data.status || 'pending', data.confirmation?.confirmation_url || null, JSON.stringify(data));
+
+    // Create pending tier subscription
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + 30);
+
+    db.prepare(`
+      INSERT INTO subscriptions (user_id, plan_type, period, status, end_date, tier, yookassa_payment_id)
+      VALUES (?, 'tier', 'monthly', 'pending', ?, ?, ?)
+    `).run(req.user.id, endDate.toISOString(), tier, data.id);
+
+    db.prepare('UPDATE yookassa_payments SET subscription_id = last_insert_rowid() WHERE id = ?').run(ypResult.lastInsertRowid);
+
+    res.json({
+      payment_id: data.id,
+      status: data.status,
+      confirmation_url: data.confirmation?.confirmation_url,
+      tier,
+      amount,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Ошибка создания подписки' });
+  }
+});
+
+// ── Tier info: return tier definitions with model lists for the modal ──
+app.get('/api/subscription/tiers-info', (req, res) => {
+  const tiers = {};
+  for (const [key, def] of Object.entries(TIER_DEFINITIONS)) {
+    const categories = {};
+    let totalModelCount = 0;
+    let allSampleModels = [];
+
+    for (const [catKey, catDef] of Object.entries(def.categories)) {
+      let query;
+      let params;
+      if (catDef.minPrice !== undefined) {
+        query = `SELECT COUNT(*) as c FROM models WHERE is_active = 1 AND category = ? AND price > 0 AND price >= ? AND price <= ?`;
+        params = [catKey, catDef.minPrice, catDef.maxPrice];
+      } else {
+        query = `SELECT COUNT(*) as c FROM models WHERE is_active = 1 AND category = ? AND price > 0 AND price <= ?`;
+        params = [catKey, catDef.maxPrice];
+      }
+      const count = db.prepare(query).get(...params).c;
+      totalModelCount += count;
+
+      // Sample models for this category
+      let samples;
+      if (catDef.minPrice !== undefined) {
+        samples = db.prepare(`
+          SELECT id, name, provider, category, price
+          FROM models WHERE is_active = 1 AND category = ? AND price > 0 AND price >= ? AND price <= ?
+          ORDER BY price ASC LIMIT 4
+        `).all(catKey, catDef.minPrice, catDef.maxPrice);
+      } else {
+        samples = db.prepare(`
+          SELECT id, name, provider, category, price
+          FROM models WHERE is_active = 1 AND category = ? AND price > 0 AND price <= ?
+          ORDER BY price ASC LIMIT 4
+        `).all(catKey, catDef.maxPrice);
+      }
+
+      categories[catKey] = {
+        label: catDef.label,
+        desc: catDef.desc,
+        count,
+        sampleModels: samples,
+      };
+      allSampleModels = allSampleModels.concat(samples);
+    }
+
+    tiers[key] = {
+      key,
+      label: def.label,
+      price: def.price,
+      modelCount: totalModelCount,
+      categories,
+      sampleModels: allSampleModels,
+    };
+  }
+  res.json({ tiers });
+});
+
 app.post('/api/yookassa/webhook', (req, res) => {
+  const clientIp = normalizeClientIp(req.ip || req.connection?.remoteAddress);
+  if (!isYookassaIp(clientIp)) {
+    console.warn('[yookassa] webhook rejected from untrusted IP', clientIp);
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
   const event = req.body?.event;
   const payment = req.body?.object;
 
@@ -378,15 +1207,45 @@ app.post('/api/yookassa/webhook', (req, res) => {
 
   if (event === 'payment.succeeded' && payment.status === 'succeeded') {
     if (existing.status !== 'succeeded') {
-      const paidAmount = Number(payment.amount?.value || existing.amount);
+      const paidAmount = Number(existing.amount);
+      const webhookAmount = Number(payment.amount?.value);
+      if (Number.isFinite(webhookAmount) && Math.abs(webhookAmount - paidAmount) > 0.01) {
+        console.error('[yookassa] amount mismatch', { payment_id: payment.id, stored: paidAmount, webhook: webhookAmount });
+      }
+
       const tx = db.transaction(() => {
-        db.prepare('UPDATE yookassa_payments SET status = ?, raw_payload = ?, paid_at = datetime(\'now\') WHERE id = ?')
-          .run('succeeded', JSON.stringify(req.body), existing.id);
-        db.prepare('UPDATE users SET balance = balance + ? WHERE id = ?').run(paidAmount, existing.user_id);
-        db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('topup', ?, ?, ?)")
-          .run(existing.user_id, paidAmount, `Пополнение ЮKassa: ${payment.id}`);
+        db.prepare('UPDATE yookassa_payments SET status = ?, raw_payload = ?, paid_at = datetime(\'now\') WHERE id = ? AND status != ?')
+          .run('succeeded', JSON.stringify(req.body), existing.id, 'succeeded');
+
+        // If this is a subscription payment, activate the subscription
+        if (existing.subscription_id) {
+          const sub = db.prepare('SELECT id, end_date FROM subscriptions WHERE id = ? AND status = ?').get(existing.subscription_id, 'pending');
+          if (sub) {
+            db.prepare(`
+              UPDATE subscriptions SET status = 'active', start_date = datetime('now'), updated_at = datetime('now')
+              WHERE id = ?
+            `).run(existing.subscription_id);
+            console.log('[subscription] activated', { subscription_id: existing.subscription_id, user_id: existing.user_id, end_date: sub.end_date });
+          }
+          // Also record a topup transaction so subscription revenue is counted in financial analytics
+          db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('topup', ?, ?, ?)")
+            .run(existing.user_id, paidAmount, `Подписка ЮKassa: ${payment.id}`);
+          try { recordFunnelEvent(db, 'subscription_complete', existing.user_id, { amount: paidAmount, subscription_id: existing.subscription_id }); } catch (e) { /* analytics best-effort */ }
+        } else {
+          // Regular topup — add to balance + bonus ladder (20% bonus)
+          const bonusAmount = Math.floor(paidAmount * 0.2);
+          db.prepare('UPDATE users SET balance = balance + ?, bonus_balance = COALESCE(bonus_balance, 0) + ? WHERE id = ?')
+            .run(paidAmount, bonusAmount, existing.user_id);
+          db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('topup', ?, ?, ?)")
+            .run(existing.user_id, paidAmount, `Пополнение ЮKassa: ${payment.id}${bonusAmount > 0 ? ` (+${bonusAmount} ₽ бонус)` : ''}`);
+          try { recordFunnelEvent(db, 'topup_complete', existing.user_id, { amount: paidAmount }); } catch (e) { /* analytics best-effort */ }
+        }
       });
       tx();
+      // Credit referral bonus if this is the referred user's first topup
+      if (!existing.subscription_id) {
+        creditReferralForTopup(db, existing.user_id);
+      }
       console.log('[yookassa] payment succeeded', { payment_id: payment.id, user_id: existing.user_id, amount: paidAmount });
     }
   } else if (event === 'payment.canceled' || payment.status === 'canceled') {
@@ -409,13 +1268,19 @@ function yookassaAuthHeader() {
   return `Basic ${Buffer.from(`${YOOKASSA_SHOP_ID}:${YOOKASSA_SECRET_KEY}`).toString('base64')}`;
 }
 
-async function createYookassaPayment({ userId, email, amount }) {
+async function createYookassaPayment({ userId, email, amount, siteId, siteTitle }) {
   if (!YOOKASSA_SHOP_ID || !YOOKASSA_SECRET_KEY) {
     throw new Error('ЮKassa не настроена');
   }
 
-  const normalizedAmount = Math.max(10, Math.min(100000, Number(amount) || 0));
+  const isSitePurchase = Boolean(siteId);
+  const floor = isSitePurchase ? 0 : 10;
+  const ceiling = isSitePurchase ? 5000 : 100000;
+  const normalizedAmount = Math.max(floor, Math.min(ceiling, Number(amount) || 0));
   const idempotenceKey = crypto.randomUUID();
+  const receiptLine = isSitePurchase
+    ? `Шаблон сайта «${siteTitle || siteId}»`
+    : 'Пополнение баланса JustRouter';
   const payload = {
     amount: {
       value: normalizedAmount.toFixed(2),
@@ -426,16 +1291,19 @@ async function createYookassaPayment({ userId, email, amount }) {
       type: 'redirect',
       return_url: YOOKASSA_RETURN_URL,
     },
-    description: `Пополнение баланса JustRouter на ${formatRub(normalizedAmount)}`,
+    description: isSitePurchase
+      ? `${receiptLine} — ${formatRub(normalizedAmount)}`
+      : `Пополнение баланса JustRouter на ${formatRub(normalizedAmount)}`,
     metadata: {
       user_id: String(userId),
-      source: 'justrouter_account',
+      source: isSitePurchase ? 'site_template' : 'justrouter_account',
+      ...(siteId ? { site_id: siteId } : {}),
     },
     receipt: email ? {
       customer: { email },
       items: [
         {
-          description: 'Пополнение баланса JustRouter',
+          description: receiptLine,
           quantity: '1.00',
           amount: { value: normalizedAmount.toFixed(2), currency: 'RUB' },
           vat_code: 1,
@@ -472,7 +1340,7 @@ async function createYookassaPayment({ userId, email, amount }) {
 
 function getUserByTelegramId(telegramId) {
   return db.prepare(`
-    SELECT users.id, users.email, users.name, users.balance, users.api_key, telegram_links.marketing_enabled
+    SELECT users.id, users.email, users.name, users.balance, users.api_key, users.is_admin, telegram_links.marketing_enabled
     FROM telegram_links
     JOIN users ON users.id = telegram_links.user_id
     WHERE telegram_links.telegram_id = ?
@@ -480,7 +1348,10 @@ function getUserByTelegramId(telegramId) {
 }
 
 async function telegramApi(method, payload) {
-  if (!TELEGRAM_BOT_TOKEN) return null;
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.warn('[telegram] TELEGRAM_BOT_TOKEN is missing, cannot call Telegram API');
+    return null;
+  }
 
   const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
     method: 'POST',
@@ -495,11 +1366,39 @@ async function telegramApi(method, payload) {
   return data;
 }
 
+async function ensureTelegramWebhook() {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.warn('[telegram] skipping webhook setup because TELEGRAM_BOT_TOKEN is missing');
+    return;
+  }
+
+  const payload = {
+    url: TELEGRAM_WEBHOOK_URL,
+    drop_pending_updates: false,
+  };
+
+  if (TELEGRAM_WEBHOOK_SECRET) {
+    payload.secret_token = TELEGRAM_WEBHOOK_SECRET;
+  }
+
+  const data = await telegramApi('setWebhook', payload);
+  if (data?.ok) {
+    console.log(`[telegram] webhook ready: ${TELEGRAM_WEBHOOK_URL}`);
+  } else {
+    console.error('[telegram] webhook setup failed', data);
+  }
+}
+
 function buildMainKeyboard(isLinked = true) {
-  const keyboard = isLinked
-    ? [['Баланс', 'API ключ'], ['Пополнить 500 ₽', 'Пополнить 1000 ₽'], ['Помощь']]
-    : [['Помощь']];
-  return { keyboard, resize_keyboard: true };
+  const rows = [];
+  if (isLinked) {
+    rows.push(['Баланс', 'API ключ']);
+    rows.push(['Пополнить 500 ₽', 'Пополнить 1000 ₽']);
+    rows.push(['Помощь']);
+  } else {
+    rows.push(['Помощь']);
+  }
+  return { keyboard: rows, resize_keyboard: true };
 }
 
 async function sendTelegramMessage(chatId, text, options = {}) {
@@ -510,6 +1409,49 @@ async function sendTelegramMessage(chatId, text, options = {}) {
     disable_web_page_preview: true,
     ...options,
   });
+}
+
+async function sendTelegramLongMessage(chatId, text, options = {}) {
+  const maxLen = 3900;
+  const value = String(text || '');
+  if (value.length <= maxLen) {
+    await sendTelegramMessage(chatId, value, options);
+    return;
+  }
+  for (let i = 0; i < value.length; i += maxLen) {
+    await sendTelegramMessage(chatId, value.substring(i, i + maxLen), options);
+  }
+}
+
+function formatAgentTrace(trace = [], { limit = 12 } = {}) {
+  const items = (trace || []).slice(0, limit);
+  if (!items.length) return '';
+  return [
+    '<b>Журнал выполнения</b>',
+    ...items.map((item, index) => {
+      const label = String(item.label || item.type || 'step');
+      const detail = String(item.detail || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `${index + 1}. ${label}${detail ? `\n   <code>${detail.slice(0, 700)}</code>` : ''}`;
+    }),
+  ].join('\n');
+}
+
+function formatOpenClawBootLog(context, actionPlan = []) {
+  const metrics = context?.signals?.metrics || {};
+  const issues = context?.signals?.issues || [];
+  const topAction = actionPlan[0]?.next_step || actionPlan[0]?.title || 'нет срочных действий';
+  return [
+    '<b>OpenClaw включён напрямую</b>',
+    '1. Открыл analytics summary за 24h.',
+    `2. Выбрал страницу анализа: <code>${context?.analyzed_path || '/'}</code>.`,
+    '3. Проверил heatmap: click points, mouse points, scroll depth, rage clicks.',
+    '4. Проверил sessions и funnel steps.',
+    '5. Поднял OpenClaw action plan.',
+    '',
+    `<b>Снимок</b>: pageviews=${metrics.pageviews ?? 0}, clicks=${metrics.clicks ?? 0}, click_rate=${metrics.click_rate_percent ?? '—'}%, rage=${metrics.rage_clicks ?? 0}, health=${context?.signals?.health || 'unknown'}`,
+    `<b>Проблем</b>: ${issues.length}`,
+    `<b>Следующее действие</b>: ${topAction}`,
+  ].join('\n');
 }
 
 async function sendTelegramInvoice(chatId, userId, amount) {
@@ -561,9 +1503,20 @@ async function maybeNotifyLowBalance(userId, balance) {
 
 async function answerTelegramUpdate(update) {
   if (update.pre_checkout_query) {
+    const query = update.pre_checkout_query;
+    const payment = db.prepare('SELECT * FROM telegram_payments WHERE payload = ?').get(query.invoice_payload);
+    const expectedAmount = payment ? Math.round(Number(payment.amount) * 100) : null;
+    const ok = Boolean(
+      payment
+      && payment.status === 'pending'
+      && query.currency === 'RUB'
+      && expectedAmount === Number(query.total_amount),
+    );
+
     await telegramApi('answerPreCheckoutQuery', {
-      pre_checkout_query_id: update.pre_checkout_query.id,
-      ok: true,
+      pre_checkout_query_id: query.id,
+      ok,
+      ...(ok ? {} : { error_message: 'Платёж не найден или сумма не совпадает' }),
     });
     return;
   }
@@ -586,7 +1539,9 @@ async function answerTelegramUpdate(update) {
     const chargeId = message.successful_payment.telegram_payment_charge_id;
     const providerChargeId = message.successful_payment.provider_payment_charge_id;
     const tx = db.transaction(() => {
-      db.prepare('UPDATE users SET balance = balance + ? WHERE id = ?').run(payment.amount, payment.user_id);
+      const bonusAmount = Math.floor(payment.amount * 0.2);
+      db.prepare('UPDATE users SET balance = balance + ?, bonus_balance = COALESCE(bonus_balance, 0) + ? WHERE id = ?')
+        .run(payment.amount, bonusAmount, payment.user_id);
       db.prepare(`
         UPDATE telegram_payments
         SET status = 'paid', paid_at = datetime('now'), telegram_payment_charge_id = ?, provider_payment_charge_id = ?
@@ -595,16 +1550,91 @@ async function answerTelegramUpdate(update) {
       db.prepare(`
         INSERT INTO transactions (type, user_id, amount, description)
         VALUES ('topup', ?, ?, ?)
-      `).run(payment.user_id, payment.amount, 'Пополнение через Telegram / YooKassa');
+      `).run(payment.user_id, payment.amount, `Пополнение через Telegram / YooKassa${bonusAmount > 0 ? ` (+${bonusAmount} ₽ бонус)` : ''}`);
       db.prepare('UPDATE telegram_links SET low_balance_notified = 0, updated_at = datetime(\'now\') WHERE user_id = ?').run(payment.user_id);
-      return db.prepare('SELECT balance FROM users WHERE id = ?').get(payment.user_id);
+      return db.prepare('SELECT balance, bonus_balance FROM users WHERE id = ?').get(payment.user_id);
     });
     const updated = tx();
-    await sendTelegramMessage(chatId, `Оплата прошла. Новый баланс: ${formatRub(updated.balance)}.`, { reply_markup: buildMainKeyboard(true) });
+    // Credit referral bonus if this is the referred user's first topup
+    creditReferralForTopup(db, payment.user_id);
+    const bonusText = Number(updated.bonus_balance) > 0 ? ` (из них ${formatRub(updated.bonus_balance)} бонусных)` : '';
+    await sendTelegramMessage(chatId, `Оплата прошла. Баланс: ${formatRub(Number(updated.balance) + Number(updated.bonus_balance))}.${bonusText}`, { reply_markup: buildMainKeyboard(true) });
     return;
   }
 
   const linkedUser = getUserByTelegramId(chatId);
+
+  if (text.startsWith('/openclaw')) {
+    if (!linkedUser || !linkedUser.is_admin) {
+      await sendTelegramMessage(chatId, 'OpenClaw-команды доступны только администратору после привязки аккаунта.', { reply_markup: buildMainKeyboard(Boolean(linkedUser)) });
+      return;
+    }
+
+    const parts = text.split(/\s+/).filter(Boolean);
+    const normalized = (parts[1] || '').toLowerCase();
+    if (!normalized || normalized === 'report' || normalized === 'now') {
+      const report = generateAndStoreOpenClawReport(db, { hours: 12, path: '/' });
+      await sendTelegramMessage(chatId, formatOpenClawTelegramReport({ report_type: 'openclaw_12h', summary: report, created_at: report.generated_at }), { reply_markup: buildMainKeyboard(true) });
+      return;
+    }
+
+    if (normalized === 'latest') {
+      const latest = getLatestOpenClawReport(db, 'openclaw_12h');
+      await sendTelegramMessage(
+        chatId,
+        formatOpenClawTelegramReport(latest || { report_type: 'openclaw_12h', summary: { total_events: 0, unique_visitors: 0, hours: 12, path: '/' } }),
+        { reply_markup: buildMainKeyboard(true) },
+      );
+      return;
+    }
+
+    if (normalized === 'heatmap') {
+      const pathArg = parts.slice(2).join(' ').trim() || '/';
+      const points = getHeatmapData(db, { path: pathArg, hours: 24, gridSize: 24 }).slice(0, 8);
+      const lines = [
+        '<b>OpenClaw heatmap</b>',
+        `Path: <code>${pathArg}</code>`,
+        '',
+      ];
+      if (points.length === 0) {
+        lines.push('Пока нет данных по кликам.');
+      } else {
+        for (const point of points) {
+          lines.push(`• ${point.x}, ${point.y} — ${point.count}`);
+        }
+      }
+      await sendTelegramMessage(chatId, lines.join('\n'), { reply_markup: buildMainKeyboard(true) });
+      return;
+    }
+
+    const openClawMessage = parts.slice(1).join(' ').trim();
+    if (openClawMessage) {
+      await sendTelegramMessage(chatId, 'OpenClaw: собираю live-контекст, heatmap, funnel и память...', { reply_markup: buildMainKeyboard(true) });
+      const context = buildOpenClawContext(db, { hours: 24, path: '', includeProject: true });
+      const actionPlan = buildOpenClawActionPlan(context);
+      await sendTelegramLongMessage(chatId, formatOpenClawBootLog(context, actionPlan), { reply_markup: buildMainKeyboard(true) });
+      const result = await processAgentMessage({
+        userId: `tg_openclaw_${chatId}`,
+        text: buildOpenClawAgentMessage(openClawMessage, context),
+        db,
+        apiKey: OPENROUTER_API_KEY,
+        dispatcher: openRouterDispatcher,
+        systemPrompt: OPENCLAW_SYSTEM_PROMPT,
+        maxRounds: 18,
+      });
+      const traceText = formatAgentTrace(result.trace);
+      if (traceText) await sendTelegramLongMessage(chatId, traceText, { reply_markup: buildMainKeyboard(true) });
+      await sendTelegramLongMessage(chatId, result.response, { parse_mode: 'HTML', reply_markup: buildMainKeyboard(true) });
+      return;
+    }
+
+    await sendTelegramMessage(
+      chatId,
+      'Команды OpenClaw: /openclaw report, /openclaw latest, /openclaw heatmap /path, /openclaw <вопрос>. Обычные сообщения админа в Telegram тоже идут сразу в OpenClaw.',
+      { reply_markup: buildMainKeyboard(true) },
+    );
+    return;
+  }
 
   if (text.startsWith('/start')) {
     const [, startParam] = text.split(/\s+/, 2);
@@ -616,7 +1646,7 @@ async function answerTelegramUpdate(update) {
     await sendTelegramMessage(
       chatId,
       linkedUser
-        ? `JustRouter подключен. Баланс: ${formatRub(linkedUser.balance)}.`
+        ? `JustRouter подключен. Баланс: ${formatRub(getPublicBalance(db, linkedUser.id).balance)}.`
         : 'Пришлите /connect код из личного кабинета JustRouter, чтобы подключить аккаунт.',
       { reply_markup: buildMainKeyboard(Boolean(linkedUser)) }
     );
@@ -625,6 +1655,53 @@ async function answerTelegramUpdate(update) {
 
   if (text.startsWith('/connect')) {
     const code = text.split(/\s+/, 2)[1];
+    if (!code) {
+      await sendTelegramMessage(chatId, '🔗 <b>Подключение аккаунта JustRouter</b>\n\n' +
+        'Чтобы пользоваться ботом, нужно привязать аккаунт JustRouter.\n\n' +
+        '1️⃣ Зайдите в личный кабинет на justrouter.ru\n' +
+        '2️⃣ Откройте настройки → Telegram\n' +
+        '3️⃣ Скопируйте код привязки\n' +
+        '4️⃣ Отправьте его сюда: <code>/connect КОД</code>\n\n' +
+        'Пример: <code>/connect JR492326</code>\n\n' +
+        '<i>Если вы администратор, можно подключить пользователя напрямую по ID: <code>/connect 1275229</code></i>',
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
+    // If code is a pure number, try direct user_id link (target must be admin)
+    if (/^\d+$/.test(code.trim())) {
+      const targetUser = db.prepare('SELECT id, email, name, balance, is_admin FROM users WHERE id = ?').get(Number(code));
+      if (!targetUser) {
+        await sendTelegramMessage(chatId, `Пользователь с ID ${code} не найден.`);
+        return;
+      }
+      if (!targetUser.is_admin) {
+        await sendTelegramMessage(chatId, 'Прямая привязка по ID доступна только для администраторов.');
+        return;
+      }
+
+      db.transaction(() => {
+        db.prepare(`
+          INSERT INTO telegram_links (user_id, telegram_id, username, first_name, updated_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(telegram_id) DO UPDATE SET
+            user_id = excluded.user_id,
+            username = excluded.username,
+            first_name = excluded.first_name,
+            updated_at = datetime('now')
+        `).run(targetUser.id, String(chatId), telegramUser.username || null, telegramUser.first_name || null);
+      })();
+
+      await sendTelegramMessage(
+        chatId,
+        `Подключен пользователь: ${targetUser.name || targetUser.email} (ID ${targetUser.id}).\nБаланс: ${formatRub(targetUser.balance)}.`,
+        { reply_markup: buildMainKeyboard(true) }
+      );
+      return;
+    }
+
+    // Otherwise use the existing code-based flow
     await connectTelegramCode(chatId, telegramUser, code);
     return;
   }
@@ -635,7 +1712,7 @@ async function answerTelegramUpdate(update) {
   }
 
   if (text === '/balance' || text.toLowerCase() === 'баланс') {
-    await sendTelegramMessage(chatId, `Баланс: ${formatRub(linkedUser.balance)}.`, { reply_markup: buildMainKeyboard(true) });
+    await sendTelegramMessage(chatId, `Баланс: ${formatRub(getPublicBalance(db, linkedUser.id).balance)}.`, { reply_markup: buildMainKeyboard(true) });
     return;
   }
 
@@ -661,6 +1738,80 @@ async function answerTelegramUpdate(update) {
     db.prepare('UPDATE telegram_links SET marketing_enabled = 0, updated_at = datetime(\'now\') WHERE telegram_id = ?').run(String(chatId));
     await sendTelegramMessage(chatId, 'Рекламные и продуктовые уведомления отключены.');
     return;
+  }
+
+  // ── JustRouter AI Agent ──
+  if (JUSTROUTER_AGENT_ENABLED && linkedUser && linkedUser.is_admin) {
+    // /agent <message> — send message to AI agent
+    if (text.startsWith('/agent ')) {
+      const agentMessage = text.slice('/agent '.length).trim();
+      if (!agentMessage) {
+        await sendTelegramMessage(chatId, 'Напишите сообщение после /agent, например: /agent покажи список пользователей');
+        return;
+      }
+
+      await sendTelegramMessage(chatId, 'AI Admin: запускаю инструменты и собираю журнал выполнения...', { reply_markup: buildMainKeyboard(true) });
+
+      try {
+        const result = await processAgentMessage({
+          userId: `tg_admin_${chatId}`,
+          text: agentMessage,
+          db,
+          apiKey: OPENROUTER_API_KEY,
+          dispatcher: openRouterDispatcher,
+          sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { parse_mode: 'HTML' }),
+        });
+
+        const traceText = formatAgentTrace(result.trace);
+        if (traceText) await sendTelegramLongMessage(chatId, traceText, { parse_mode: 'HTML' });
+        await sendTelegramLongMessage(chatId, result.response, { parse_mode: 'HTML' });
+      } catch (e) {
+        console.error('[agent] error:', e.message);
+        await sendTelegramMessage(chatId, `Ошибка: ${e.message}`);
+      }
+      return;
+    }
+
+    // /clear — reset conversation history
+    if (text === '/clear' || text.toLowerCase() === 'очистить') {
+      clearConversation(`tg_admin_${chatId}`);
+      clearConversation(`tg_openclaw_${chatId}`);
+      await sendTelegramMessage(chatId, 'История Telegram-диалога с OpenClaw и универсальным AI-агентом очищена. Начинаем с чистого листа.');
+      return;
+    }
+
+    // Any other admin message → route directly to OpenClaw.
+    if (text.startsWith('/balance') || text.startsWith('/key') || text.startsWith('/topup')
+        || text.startsWith('/ads_') || text.startsWith('/start') || text.startsWith('/connect')
+        || text.startsWith('/openclaw') || text.startsWith('/clear') || text.startsWith('/agent')) {
+      // These are handled above, skip
+    } else {
+      await sendTelegramMessage(chatId, 'OpenClaw: собираю live-контекст, heatmap, funnel и память...', { reply_markup: buildMainKeyboard(true) });
+
+      try {
+        const context = buildOpenClawContext(db, { hours: 24, path: '', includeProject: true });
+        const actionPlan = buildOpenClawActionPlan(context);
+        await sendTelegramLongMessage(chatId, formatOpenClawBootLog(context, actionPlan), { reply_markup: buildMainKeyboard(true) });
+        const result = await processAgentMessage({
+          userId: `tg_openclaw_${chatId}`,
+          text: buildOpenClawAgentMessage(text, context),
+          db,
+          apiKey: OPENROUTER_API_KEY,
+          dispatcher: openRouterDispatcher,
+          sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { parse_mode: 'HTML' }),
+          systemPrompt: OPENCLAW_SYSTEM_PROMPT,
+          maxRounds: 18,
+        });
+
+        const traceText = formatAgentTrace(result.trace);
+        if (traceText) await sendTelegramLongMessage(chatId, traceText, { parse_mode: 'HTML', reply_markup: buildMainKeyboard(true) });
+        await sendTelegramLongMessage(chatId, result.response, { parse_mode: 'HTML', reply_markup: buildMainKeyboard(true) });
+      } catch (e) {
+        console.error('[openclaw] telegram error:', e.message);
+        await sendTelegramMessage(chatId, `Ошибка: ${e.message}`);
+      }
+      return;
+    }
   }
 
   await sendTelegramMessage(
@@ -703,10 +1854,16 @@ async function connectTelegramCode(chatId, telegramUser, code) {
   await sendTelegramMessage(chatId, `Аккаунт подключен. Баланс: ${formatRub(user.balance)}.`, { reply_markup: buildMainKeyboard(true) });
 }
 
-app.post('/api/telegram/webhook', async (req, res) => {
+app.post('/api/telegram/webhook', publicWriteRateLimit, async (req, res) => {
   if (TELEGRAM_WEBHOOK_SECRET && req.headers['x-telegram-bot-api-secret-token'] !== TELEGRAM_WEBHOOK_SECRET) {
     return res.status(403).json({ error: 'Forbidden' });
   }
+
+  // Log webhook update
+  const updateType = req.body?.message ? 'message' : req.body?.pre_checkout_query ? 'pre_checkout_query' : req.body?.callback_query ? 'callback_query' : 'other';
+  const chatId = req.body?.message?.chat?.id || req.body?.callback_query?.message?.chat?.id || '?';
+  const text = req.body?.message?.text || '';
+  console.log(`[telegram] webhook update type=${updateType} chat=${chatId} text="${text.slice(0, 50)}"`);
 
   res.json({ ok: true });
   try {
@@ -739,23 +1896,25 @@ app.get('/api/models', (req, res) => {
   const params = [];
 
   if (category && category !== 'all') { sql += ' AND category = ?'; params.push(category); }
+  // Hide openrouter/auto (Auto Router) from image models — it's a routing placeholder, not a real model
+  if (category === 'image') { sql += " AND id != 'openrouter/auto'"; }
   if (provider && provider !== 'Все') { sql += ' AND provider = ?'; params.push(provider); }
   if (search) { sql += ' AND (name LIKE ? OR id LIKE ? OR provider LIKE ?)'; const q = `%${search}%`; params.push(q, q, q); }
 
-  if (sort === 'price-asc') sql += ' ORDER BY price ASC';
-  else if (sort === 'price-desc') sql += ' ORDER BY price DESC';
+  if (sort === 'price-asc') sql += ' ORDER BY CASE WHEN price < 0 THEN 999999 ELSE price END ASC';
+  else if (sort === 'price-desc') sql += ' ORDER BY CASE WHEN price < 0 THEN -1 ELSE price END DESC';
   else if (sort === 'speed') sql += ' ORDER BY speed DESC';
   else if (sort === 'context') sql += ' ORDER BY context DESC';
   else sql += ' ORDER BY id ASC';
 
-  const models = db.prepare(sql).all(...params);
+  const models = db.prepare(sql).all(...params).map(enrichModelVideoMetaRow);
   res.json(models);
 });
 
 app.get('/api/models/:id', (req, res) => {
   const model = db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(req.params.id);
   if (!model) return res.status(404).json({ error: 'Модель не найдена' });
-  res.json(model);
+  res.json(enrichModelVideoMetaRow(model));
 });
 
 // ── Chat / Messages ─────────────────────────────────────
@@ -764,9 +1923,11 @@ function mapOpenRouterModel(modelId) {
   return OPENROUTER_MODEL_MAP[modelId] || modelId;
 }
 
+const OPENROUTER_CHAT_MAX_TOKENS = Number(process.env.OPENROUTER_CHAT_MAX_TOKENS || 2048);
+
 async function requestOpenRouterCompletion(modelId, content) {
   if (!OPENROUTER_API_KEY) {
-    throw new Error('OpenRouter не настроен');
+    throw new Error('Сервис моделей временно недоступен');
   }
 
   const response = await undiciFetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -781,21 +1942,39 @@ async function requestOpenRouterCompletion(modelId, content) {
     body: JSON.stringify({
       model: mapOpenRouterModel(modelId),
       messages: [{ role: 'user', content }],
+      max_tokens: OPENROUTER_CHAT_MAX_TOKENS,
     }),
   });
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     console.error('[openrouter] request failed', data);
-    throw new Error(data?.error?.message || data?.message || 'Не удалось получить ответ от OpenRouter');
+    throw new Error(formatOpenRouterClientError(
+      data?.error?.message || data?.message || 'Не удалось получить ответ от модели',
+    ));
   }
 
   const text = data?.choices?.[0]?.message?.content;
   if (!text) {
-    throw new Error('OpenRouter вернул пустой ответ');
+    throw new Error('Модель вернула пустой ответ');
   }
 
-  return text;
+  return { text, usage: data.usage || {} };
+}
+
+async function generateModelResponse(model, content, agentName = null) {
+  if (!OPENROUTER_API_KEY || model.category !== 'text') {
+    const err = new Error('Генерация текста временно недоступна');
+    err.statusCode = 503;
+    throw err;
+  }
+
+  const { text, usage } = await requestOpenRouterCompletion(model.id, content);
+  return {
+    response: text,
+    costRub: costRubFromOpenRouterUsage(model, usage),
+    usage,
+  };
 }
 
 function generateMockResponse(model, content, agentName = null) {
@@ -813,51 +1992,69 @@ function generateMockResponse(model, content, agentName = null) {
   return `Интересный вопрос! Я — ${model.name}. По вашему запросу «${content.slice(0, 50)}...» могу сказать, что это многообещающая тема. Готов обсудить детали.`;
 }
 
-async function generateModelResponse(model, content, agentName = null) {
-  if (OPENROUTER_API_KEY && model.category === 'text') {
-    return requestOpenRouterCompletion(model.id, content);
-  }
-  return generateMockResponse(model, content, agentName);
-}
-
-app.post('/api/chat', authMiddleware, async (req, res) => {
+app.post('/api/chat', mediaRateLimit, authMiddleware, requireJsonFields(['model_id', 'content']), async (req, res) => {
   const { model_id, content } = req.body;
   if (!model_id || !content) return res.status(400).json({ error: 'model_id и content обязательны' });
+
+  const banned = db.prepare('SELECT banned FROM users WHERE id = ?').get(req.user.id);
+  if (banned?.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован администратором' });
 
   const model = db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(model_id);
   if (!model) return res.status(404).json({ error: 'Модель не найдена' });
 
-  // Check free requests
-  const freeCount = db.prepare('SELECT COUNT(*) as count FROM messages WHERE user_id = ? AND model_id = ? AND is_free = 1').get(req.user.id, model_id);
-  const isFree = freeCount.count < 10;
+  const user = getWallet(db, req.user.id);
+  const isFree = isFreeRequest(db, req.user.id, model_id);
+  const estimatedCost = estimateTextMessageCostRub(model);
+
+  if (!isFree) {
+    try {
+      assertSufficientBalance({ balance: getTotalBalance(user) }, estimatedCost);
+    } catch (e) {
+      return res.status(e.statusCode || 402).json({ error: e.message });
+    }
+  }
+
+  if (!isFree && !OPENROUTER_API_KEY) {
+    return res.status(503).json({ error: 'Генерация временно недоступна' });
+  }
 
   db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(req.user.id, model_id, 'user', content, isFree ? 1 : 0);
 
-  let response;
+  let result;
   try {
-    response = await generateModelResponse(model, content);
+    result = await generateModelResponse(model, content);
   } catch (e) {
     console.error('[chat] response generation failed', e);
-    return res.status(502).json({ error: e.message || 'Ошибка генерации ответа' });
+    return res.status(e.statusCode || 502).json({ error: e.message || 'Ошибка генерации ответа' });
   }
 
-  db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(req.user.id, model_id, 'assistant', response, isFree ? 1 : 0);
+  db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(req.user.id, model_id, 'assistant', result.response, isFree ? 1 : 0);
 
+  let charged = 0;
   if (!isFree) {
-    // Deduct from balance if beyond free limit
-    const cost = model.price * 0.0001;
-    db.prepare('UPDATE users SET balance = MAX(0, balance - ?) WHERE id = ?').run(cost, req.user.id);
-    db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('user_payment', ?, ?, ?)").run(req.user.id, -cost, `Оплата ${model.name}: ${content.slice(0, 50)}`);
+    try {
+      charged = chargeUserBalance(
+        db,
+        req.user.id,
+        result.costRub,
+        `Оплата ${model.name}: ${content.slice(0, 50)}`,
+        model.price,
+        model.category,
+      );
+    } catch (e) {
+      return res.status(e.statusCode || 402).json({ error: e.message });
+    }
   }
 
-  const balance = db.prepare('SELECT balance FROM users WHERE id = ?').get(req.user.id).balance;
+  const { balance } = getPublicBalance(db, req.user.id);
   void maybeNotifyLowBalance(req.user.id, balance);
 
   res.json({
-    response,
+    response: result.response,
     is_free: isFree,
-    free_remaining: Math.max(0, 10 - freeCount.count - 1),
+    free_remaining: getFreeRemaining(db, req.user.id, model_id),
     balance,
+    cost: charged,
   });
 });
 
@@ -877,8 +2074,477 @@ app.get('/api/free-remaining', authMiddleware, (req, res) => {
   const { model_id } = req.query;
   if (!model_id) return res.status(400).json({ error: 'model_id обязателен' });
 
-  const freeCount = db.prepare('SELECT COUNT(*) as count FROM messages WHERE user_id = ? AND model_id = ? AND is_free = 1').get(req.user.id, model_id);
-  res.json({ free_remaining: Math.max(0, 10 - freeCount.count) });
+  res.json({ free_remaining: getFreeRemaining(db, req.user.id, model_id) });
+});
+
+function syncVideoJobRecord(job, model) {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error('Сервис моделей временно недоступен');
+  }
+
+  return pollOpenRouterVideoJob({
+    apiKey: OPENROUTER_API_KEY,
+    proxyUrl: OPENROUTER_PROXY_URL,
+    openrouterJobId: job.openrouter_job_id,
+  }).then((statusData) => {
+    const status = statusData.status || job.status;
+    const videoUrls = statusData.unsigned_urls || [];
+    const error = statusData.error || statusData.message || null;
+    const costRub = estimateVideoCostRub(model, job.duration, statusData.usage?.cost);
+
+    db.prepare(`
+      UPDATE video_jobs
+      SET status = ?, video_urls = ?, error = ?, cost_rub = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(status, videoUrls.length ? JSON.stringify(videoUrls) : null, error, costRub, job.id);
+
+    const updatedJob = db.prepare('SELECT * FROM video_jobs WHERE id = ?').get(job.id);
+
+    if (status === 'completed') {
+      db.transaction(() => {
+        const claim = db.prepare(`
+          UPDATE video_jobs
+          SET is_charged = 1, updated_at = datetime('now')
+          WHERE id = ? AND is_charged = 0
+        `).run(updatedJob.id);
+        if (claim.changes === 0) return;
+
+        const assistantContent = JSON.stringify({
+          type: 'video',
+          prompt: updatedJob.prompt,
+          job_id: updatedJob.id,
+          duration: updatedJob.duration,
+        });
+
+        db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(
+          updatedJob.user_id,
+          updatedJob.model_id,
+          'assistant',
+          assistantContent,
+          updatedJob.is_free,
+        );
+
+        if (!updatedJob.is_free && costRub > 0) {
+          const wallet = getWallet(db, updatedJob.user_id);
+          assertSufficientBalance({ balance: getTotalBalance(wallet) }, costRub);
+          chargeUserBalance(
+            db,
+            updatedJob.user_id,
+            costRub,
+            `Видео ${model.name}: ${updatedJob.prompt.slice(0, 50)}`,
+          );
+        }
+      })();
+    }
+
+    return { statusData, updatedJob: db.prepare('SELECT * FROM video_jobs WHERE id = ?').get(job.id), costRub };
+  });
+}
+
+app.post('/api/video', mediaRateLimit, authMiddleware, requireJsonFields(['model_id', 'prompt']), async (req, res) => {
+  const banned = db.prepare('SELECT banned FROM users WHERE id = ?').get(req.user.id);
+  if (banned?.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован администратором' });
+  const {
+    model_id,
+    prompt,
+    duration = 8,
+    resolution = '720p',
+    aspect_ratio = '16:9',
+    images,
+    reference_images,
+  } = req.body;
+  if (!model_id || !prompt?.trim()) {
+    return res.status(400).json({ error: 'model_id и prompt обязательны' });
+  }
+
+  if (!OPENROUTER_API_KEY) {
+    return res.status(503).json({ error: 'Генерация видео временно недоступна' });
+  }
+
+  const model = enrichModelVideoMetaRow(
+    db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(model_id),
+  );
+  if (!model) return res.status(404).json({ error: 'Модель не найдена' });
+  if (model.category !== 'video') return res.status(400).json({ error: 'Эта модель не поддерживает генерацию видео' });
+
+  let frameImages = [];
+  let inputReferences = [];
+  try {
+    if (Array.isArray(images) && images.length) {
+      ({ frameImages, inputReferences } = normalizeStructuredImages(images));
+    } else if (Array.isArray(reference_images) && reference_images.length) {
+      inputReferences = normalizeImageList(reference_images).map((url) => ({
+        type: 'image_url',
+        image_url: { url },
+      }));
+    }
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    validateVideoRequestForModel(model, {
+      frameImages,
+      inputReferences,
+      duration,
+      resolution,
+      aspectRatio: aspect_ratio,
+      videoMeta: parseStoredVideoMeta(model.video_meta),
+    });
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  const imageCount = frameImages.length + inputReferences.length;
+  const isFree = isFreeRequest(db, req.user.id, model_id);
+  const estimatedCost = estimateVideoCostRub(model, duration);
+  const user = getWallet(db, req.user.id);
+
+  if (!isFree) {
+    try {
+      assertSufficientBalance({ balance: getTotalBalance(user) }, estimatedCost);
+    } catch (e) {
+      return res.status(e.statusCode || 402).json({ error: e.message });
+    }
+  }
+
+  try {
+    await ensureOpenRouterCreditsForVideo({
+      apiKey: OPENROUTER_API_KEY,
+      proxyUrl: OPENROUTER_PROXY_URL,
+      model,
+      durationSeconds: duration,
+    });
+
+    const result = await submitOpenRouterVideoJob({
+      apiKey: OPENROUTER_API_KEY,
+      proxyUrl: OPENROUTER_PROXY_URL,
+      modelId: model_id,
+      prompt: prompt.trim(),
+      duration: Number(duration) || 8,
+      resolution,
+      aspectRatio: aspect_ratio,
+      frameImages,
+      inputReferences,
+    });
+
+    if (!result?.id) {
+      throw new Error('Провайдер не вернул идентификатор задачи');
+    }
+
+    const userContent = prompt.trim() + summarizeImagesForLog(imageCount);
+    db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id,
+      model_id,
+      'user',
+      userContent,
+      isFree ? 1 : 0,
+    );
+
+    const insert = db.prepare(`
+      INSERT INTO video_jobs (user_id, model_id, prompt, openrouter_job_id, status, duration, is_free)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const info = insert.run(
+      req.user.id,
+      model_id,
+      prompt.trim(),
+      result.id,
+      result.status || 'pending',
+      Number(duration) || 8,
+      isFree ? 1 : 0,
+    );
+
+    res.status(202).json({
+      job_id: info.lastInsertRowid,
+      status: result.status || 'pending',
+      is_free: isFree,
+      free_remaining: getFreeRemaining(db, req.user.id, model_id),
+      estimated_cost_rub: isFree ? 0 : estimatedCost,
+      balance: getPublicBalance(db, req.user.id).balance,
+    });
+  } catch (e) {
+    console.error('[video] submit failed', e);
+    const message = formatOpenRouterClientError(e.message);
+    const status = /временно недоступ/i.test(message) ? 503 : 502;
+    res.status(status).json({ error: message || 'Не удалось запустить генерацию видео' });
+  }
+});
+
+app.post('/api/audio', mediaRateLimit, authMiddleware, requireJsonFields(['model_id', 'prompt']), async (req, res) => {
+  const banned = db.prepare('SELECT banned FROM users WHERE id = ?').get(req.user.id);
+  if (banned?.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован администратором' });
+  const { model_id, prompt, voice = 'alloy' } = req.body;
+  if (!model_id || !prompt?.trim()) {
+    return res.status(400).json({ error: 'model_id и prompt обязательны' });
+  }
+
+  if (!OPENROUTER_API_KEY) {
+    return res.status(503).json({ error: 'Генерация аудио временно недоступна' });
+  }
+
+  const model = db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(model_id);
+  if (!model) return res.status(404).json({ error: 'Модель не найдена' });
+  if (model.category !== 'audio') return res.status(400).json({ error: 'Эта модель не поддерживает генерацию аудио' });
+
+  const user = getWallet(db, req.user.id);
+  const isFree = isFreeRequest(db, req.user.id, model_id);
+  const estimatedCost = estimateTextMessageCostRub(model);
+
+  if (!isFree) {
+    try {
+      assertSufficientBalance({ balance: getTotalBalance(user) }, estimatedCost);
+    } catch (e) {
+      return res.status(e.statusCode || 402).json({ error: e.message });
+    }
+  }
+
+  try {
+    const response = await undiciFetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      dispatcher: openRouterDispatcher,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'HTTP-Referer': 'https://justrouter.ru',
+        'X-Title': 'JustRouter',
+      },
+      body: JSON.stringify({
+        model: mapOpenRouterModel(model_id),
+        modalities: ['text', 'audio'],
+        audio: { voice, format: 'wav' },
+        messages: [{ role: 'user', content: prompt.trim() }],
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(formatOpenRouterClientError(
+        data?.error?.message || data?.message || 'Не удалось получить ответ от модели',
+      ));
+    }
+
+    const audioData = data?.choices?.[0]?.message?.audio?.data;
+    const transcript = data?.choices?.[0]?.message?.audio?.transcript;
+    const text = data?.choices?.[0]?.message?.content;
+    if (!audioData) {
+      throw new Error('Модель не вернула аудио');
+    }
+
+    const costRub = costRubFromOpenRouterUsage(model, data.usage || {});
+
+    let charged = 0;
+    if (!isFree) {
+      charged = chargeUserBalance(
+        db,
+        req.user.id,
+        costRub,
+        `Генерация аудио через ${model.name}: ${prompt.trim().slice(0, 50)}`,
+        model.price,
+        model.category,
+      );
+    }
+
+    db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(req.user.id, model_id, 'user', prompt.trim(), isFree ? 1 : 0);
+    db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(req.user.id, model_id, 'assistant', transcript || text || '(аудио)', isFree ? 1 : 0);
+
+    const { balance } = getPublicBalance(db, req.user.id);
+    void maybeNotifyLowBalance(req.user.id, balance);
+
+    res.json({
+      audio: audioData,
+      format: 'wav',
+      transcript: transcript || null,
+      text: text || null,
+      cost: charged,
+      costRub,
+      balance,
+      is_free: isFree,
+    });
+  } catch (e) {
+    console.error('[audio] generation failed', e);
+    return res.status(e.statusCode || 502).json({ error: e.message || 'Ошибка генерации аудио' });
+  }
+});
+
+app.post('/api/image', mediaRateLimit, authMiddleware, requireJsonFields(['model_id', 'prompt']), async (req, res) => {
+  const banned = db.prepare('SELECT banned FROM users WHERE id = ?').get(req.user.id);
+  if (banned?.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован администратором' });
+  const {
+    model_id,
+    prompt,
+    reference_images,
+    aspect_ratio,
+    image_size,
+  } = req.body;
+
+  if (!model_id || !prompt?.trim()) {
+    return res.status(400).json({ error: 'model_id и prompt обязательны' });
+  }
+
+  if (!OPENROUTER_API_KEY) {
+    return res.status(503).json({ error: 'Генерация изображений временно недоступна' });
+  }
+
+  const model = db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(model_id);
+  if (!model) return res.status(404).json({ error: 'Модель не найдена' });
+  if (model.category !== 'image') {
+    return res.status(400).json({ error: 'Эта модель не поддерживает генерацию изображений' });
+  }
+
+  let referenceImages = [];
+  try {
+    referenceImages = normalizeImageList(reference_images);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  const isFree = isFreeRequest(db, req.user.id, model_id);
+  const estimatedCost = estimateImageCostRub(model, referenceImages.length);
+  const user = getWallet(db, req.user.id);
+
+  if (!isFree) {
+    try {
+      assertSufficientBalance({ balance: getTotalBalance(user) }, estimatedCost);
+    } catch (e) {
+      return res.status(e.statusCode || 402).json({ error: e.message });
+    }
+  }
+
+  const imageConfig = {};
+  if (aspect_ratio) imageConfig.aspect_ratio = aspect_ratio;
+  if (image_size) imageConfig.image_size = image_size;
+
+  try {
+    const result = await generateOpenRouterImage({
+      apiKey: OPENROUTER_API_KEY,
+      proxyUrl: OPENROUTER_PROXY_URL,
+      modelId: model_id,
+      prompt: prompt.trim(),
+      referenceImages,
+      imageConfig,
+    });
+
+    const userContent = prompt.trim() + summarizeImagesForLog(referenceImages.length);
+    db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id,
+      model_id,
+      'user',
+      userContent,
+      isFree ? 1 : 0,
+    );
+
+    const assistantContent = JSON.stringify({
+      type: 'image',
+      images: result.images,
+      text: result.text || null,
+    });
+    db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id,
+      model_id,
+      'assistant',
+      assistantContent,
+      isFree ? 1 : 0,
+    );
+
+    let charged = 0;
+    if (!isFree) {
+      try {
+        charged = chargeUserBalance(
+          db,
+          req.user.id,
+          imageCostRubFromUsage(model, result.usage),
+          `Оплата ${model.name}: ${prompt.trim().slice(0, 50)}`,
+          model.price,
+          model.category,
+        );
+      } catch (e) {
+        return res.status(e.statusCode || 402).json({ error: e.message });
+      }
+    }
+
+    const { balance } = getPublicBalance(db, req.user.id);
+    void maybeNotifyLowBalance(req.user.id, balance);
+
+    res.json({
+      images: result.images,
+      text: result.text || null,
+      is_free: isFree,
+      free_remaining: getFreeRemaining(db, req.user.id, model_id),
+      balance,
+      cost: charged,
+    });
+  } catch (e) {
+    console.error('[image] generation failed', e);
+    const message = formatOpenRouterClientError(e.message);
+    const status = /временно недоступ/i.test(message) ? 503 : 502;
+    res.status(status).json({ error: message || 'Не удалось сгенерировать изображение' });
+  }
+});
+
+app.get('/api/video/jobs/:id', authMiddleware, async (req, res) => {
+  const job = db.prepare('SELECT * FROM video_jobs WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!job) return res.status(404).json({ error: 'Задача не найдена' });
+
+  const model = db.prepare('SELECT * FROM models WHERE id = ?').get(job.model_id);
+  if (!model) return res.status(404).json({ error: 'Модель не найдена' });
+
+  try {
+    let currentJob = job;
+    if (currentJob.status !== 'completed' && currentJob.status !== 'failed') {
+      const { updatedJob } = await syncVideoJobRecord(currentJob, model);
+      currentJob = updatedJob;
+    }
+
+    const { balance } = getPublicBalance(db, req.user.id);
+    const freeCount = getFreeRemaining(db, req.user.id, job.model_id);
+
+    res.json({
+      job_id: currentJob.id,
+      status: currentJob.status,
+      error: currentJob.error,
+      prompt: currentJob.prompt?.length > 500 ? `${currentJob.prompt.slice(0, 500)}…` : currentJob.prompt,
+      duration: currentJob.duration,
+      cost_rub: currentJob.cost_rub,
+      stream_urls: currentJob.video_urls
+        ? JSON.parse(currentJob.video_urls).map((_, index) => `/api/video/jobs/${currentJob.id}/stream?index=${index}`)
+        : [],
+      is_free: Boolean(currentJob.is_free),
+      free_remaining: freeCount,
+      balance,
+    });
+  } catch (e) {
+    console.error('[video] poll failed', e);
+    res.status(502).json({ error: e.message || 'Не удалось проверить статус генерации' });
+  }
+});
+
+app.get('/api/video/jobs/:id/stream', authMiddleware, async (req, res) => {
+  const job = db.prepare('SELECT * FROM video_jobs WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!job) return res.status(404).json({ error: 'Задача не найдена' });
+  if (job.status !== 'completed' || !job.video_urls) {
+    return res.status(409).json({ error: 'Видео ещё не готово' });
+  }
+
+  const index = Number(req.query.index || 0);
+  const urls = JSON.parse(job.video_urls);
+  const contentUrl = urls[index];
+  if (!contentUrl) return res.status(404).json({ error: 'Видео не найдено' });
+
+  try {
+    const upstream = await fetchOpenRouterVideoContent({
+      apiKey: OPENROUTER_API_KEY,
+      proxyUrl: OPENROUTER_PROXY_URL,
+      contentUrl,
+    });
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'video/mp4');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    res.send(buffer);
+  } catch (e) {
+    console.error('[video] stream failed', e);
+    res.status(502).json({ error: e.message || 'Не удалось загрузить видео' });
+  }
 });
 
 // ── Agents API ─────────────────────────────────────────
@@ -926,74 +2592,99 @@ function universalAuth(req, res, next) {
 }
 
 // POST /api/v1/chat — универсальный чат (пользователь или агент, любая модель)
-app.post('/api/v1/chat', universalAuth, async (req, res) => {
+app.post('/api/v1/chat', mediaRateLimit, universalAuth, requireJsonFields(['model_id', 'content']), async (req, res) => {
   const { model_id, content } = req.body;
   if (!model_id || !content) return res.status(400).json({ error: 'model_id и content обязательны' });
 
   const model = db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(model_id);
   if (!model) return res.status(404).json({ error: 'Модель не найдена' });
 
+  // Check if user is banned
+  if (req.authType === 'user') {
+    const banned = db.prepare('SELECT banned FROM users WHERE id = ?').get(req.authUser.id);
+    if (banned?.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован администратором' });
+  } else if (req.authType === 'agent') {
+    const banned = db.prepare('SELECT banned FROM users WHERE id = ?').get(req.agent.user_id);
+    if (banned?.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован администратором' });
+  }
+
   if (req.authType === 'user') {
     const userId = req.authUser.id;
+    const user = getWallet(db, userId);
+    const isFree = isFreeRequest(db, userId, model_id);
+    const estimatedCost = estimateTextMessageCostRub(model);
 
-    // Check free requests
-    const freeCount = db.prepare('SELECT COUNT(*) as count FROM messages WHERE user_id = ? AND model_id = ? AND is_free = 1').get(userId, model_id);
-    const isFree = freeCount.count < 10;
+    if (!isFree) {
+      try {
+        assertSufficientBalance({ balance: getTotalBalance(user) }, estimatedCost);
+      } catch (e) {
+        return res.status(e.statusCode || 402).json({ error: e.message });
+      }
+    }
+
+    if (!isFree && !OPENROUTER_API_KEY) {
+      return res.status(503).json({ error: 'Генерация временно недоступна' });
+    }
 
     db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(userId, model_id, 'user', content, isFree ? 1 : 0);
 
-    let response;
+    let result;
     try {
-      response = await generateModelResponse(model, content);
+      result = await generateModelResponse(model, content);
     } catch (e) {
       console.error('[v1/chat] response generation failed', e);
-      return res.status(502).json({ error: e.message || 'Ошибка генерации ответа' });
+      return res.status(e.statusCode || 502).json({ error: e.message || 'Ошибка генерации ответа' });
     }
 
-    db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(userId, model_id, 'assistant', response, isFree ? 1 : 0);
+    db.prepare('INSERT INTO messages (user_id, model_id, role, content, is_free) VALUES (?, ?, ?, ?, ?)').run(userId, model_id, 'assistant', result.response, isFree ? 1 : 0);
 
+    let charged = 0;
     if (!isFree) {
-      const cost = model.price * 0.0001;
-      db.prepare('UPDATE users SET balance = MAX(0, balance - ?) WHERE id = ?').run(cost, userId);
-      db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('user_payment', ?, ?, ?)").run(userId, -cost, `Оплата ${model.name}: ${content.slice(0, 50)}`);
+      try {
+        charged = chargeUserBalance(db, userId, result.costRub, `Оплата ${model.name}: ${content.slice(0, 50)}`, model.price, model.category);
+      } catch (e) {
+        return res.status(e.statusCode || 402).json({ error: e.message });
+      }
     }
 
-    const balance = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId).balance;
+    const { balance } = getPublicBalance(db, userId);
     void maybeNotifyLowBalance(userId, balance);
 
     res.json({
-      response,
+      response: result.response,
       auth_type: 'user',
       is_free: isFree,
-      free_remaining: Math.max(0, 10 - freeCount.count - 1),
+      free_remaining: getFreeRemaining(db, userId, model_id),
       balance,
+      cost: charged,
     });
   } else {
     // Agent
     const agentId = req.agent.id;
 
-    if (req.agent.balance <= 0) {
+    const estimatedCost = estimateTextMessageCostRub(model);
+    if (req.agent.balance < estimatedCost) {
       return res.status(402).json({ error: 'Недостаточно средств. Пополните баланс агента.' });
     }
 
     db.prepare('INSERT INTO agent_messages (agent_id, model_id, role, content) VALUES (?, ?, ?, ?)').run(agentId, model_id, 'user', content);
 
-    let response;
+    let result;
     try {
-      response = await generateModelResponse(model, content, req.agent.name);
+      result = await generateModelResponse(model, content, req.agent.name);
     } catch (e) {
       console.error('[v1/chat agent] response generation failed', e);
       return res.status(502).json({ error: e.message || 'Ошибка генерации ответа' });
     }
 
-    db.prepare('INSERT INTO agent_messages (agent_id, model_id, role, content) VALUES (?, ?, ?, ?)').run(agentId, model_id, 'assistant', response);
+    db.prepare('INSERT INTO agent_messages (agent_id, model_id, role, content) VALUES (?, ?, ?, ?)').run(agentId, model_id, 'assistant', result.response);
 
-    const cost = Math.max(0.01, model.price * 0.0001);
+    const cost = Math.max(0.01, result.costRub);
     db.prepare('UPDATE agents SET balance = MAX(0, balance - ?) WHERE id = ?').run(cost, agentId);
     db.prepare("INSERT INTO transactions (type, agent_id, amount, description) VALUES ('agent_payment', ?, ?, ?)").run(agentId, -cost, `Агент ${req.agent.name}: ${model.name} — ${content.slice(0, 50)}`);
     const balance = db.prepare('SELECT balance FROM agents WHERE id = ?').get(agentId).balance;
 
-    res.json({ response, auth_type: 'agent', balance, cost });
+    res.json({ response: result.response, auth_type: 'agent', balance, cost });
   }
 });
 
@@ -1024,7 +2715,7 @@ function agentAuthMiddleware(req, res, next) {
 }
 
 // POST /api/v1/agents/register — создать агента
-app.post('/api/v1/agents/register', (req, res) => {
+app.post('/api/v1/agents/register', authRateLimit, (req, res) => {
   const { name, owner_token } = req.body;
   if (!name) return res.status(400).json({ error: 'Имя агента обязательно' });
   if (typeof name !== 'string' || name.length > 100) return res.status(400).json({ error: 'Имя агента не может быть длиннее 100 символов' });
@@ -1053,7 +2744,7 @@ app.post('/api/v1/agents/register', (req, res) => {
 });
 
 // POST /api/v1/agents/login — получить токен сессии по API ключу
-app.post('/api/v1/agents/login', (req, res) => {
+app.post('/api/v1/agents/login', authRateLimit, (req, res) => {
   const { api_key } = req.body;
   if (!api_key) return res.status(400).json({ error: 'api_key обязателен' });
 
@@ -1091,35 +2782,36 @@ app.get('/api/v1/agents/invoice', agentAuthMiddleware, (req, res) => {
 });
 
 // POST /api/v1/agents/chat — отправить сообщение от имени агента
-app.post('/api/v1/agents/chat', agentAuthMiddleware, (req, res) => {
+app.post('/api/v1/agents/chat', agentAuthMiddleware, async (req, res) => {
   const { model_id, content } = req.body;
   if (!model_id || !content) return res.status(400).json({ error: 'model_id и content обязательны' });
 
   const model = db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(model_id);
   if (!model) return res.status(404).json({ error: 'Модель не найдена' });
 
-  if (req.agent.balance <= 0) {
+  const estimatedCost = estimateTextMessageCostRub(model);
+  if (req.agent.balance < estimatedCost) {
     return res.status(402).json({ error: 'Недостаточно средств. Пополните баланс агента.' });
   }
 
   db.prepare('INSERT INTO agent_messages (agent_id, model_id, role, content) VALUES (?, ?, ?, ?)').run(req.agent.id, model_id, 'user', content);
 
-  // Simulated AI response
-  let response = '';
-  const q = content.toLowerCase();
-  if (q.includes('привет') || q.includes('здравствуй')) response = `Здравствуйте! Я агент ${req.agent.name}. Чем могу помочь?`;
-  else if (q.includes('код') || q.includes('напиши')) response = 'Конечно! Вот пример на Python:\n\n```python\ndef hello(name):\n    print(f"Привет, {name}!")\n\nhello("мир")\n```';
-  else response = `Я агент ${req.agent.name}. По вашему запросу «${content.slice(0, 50)}...» — интересная тема!`;
+  let result;
+  try {
+    result = await generateModelResponse(model, content, req.agent.name);
+  } catch (e) {
+    console.error('[v1/agents/chat] response generation failed', e);
+    return res.status(502).json({ error: e.message || 'Ошибка генерации ответа' });
+  }
 
-  db.prepare('INSERT INTO agent_messages (agent_id, model_id, role, content) VALUES (?, ?, ?, ?)').run(req.agent.id, model_id, 'assistant', response);
+  db.prepare('INSERT INTO agent_messages (agent_id, model_id, role, content) VALUES (?, ?, ?, ?)').run(req.agent.id, model_id, 'assistant', result.response);
 
-  // Deduct from balance
-  const cost = Math.max(0.01, model.price * 0.0001);
+  const cost = Math.max(0.01, result.costRub);
   db.prepare('UPDATE agents SET balance = MAX(0, balance - ?) WHERE id = ?').run(cost, req.agent.id);
   db.prepare("INSERT INTO transactions (type, agent_id, amount, description) VALUES ('agent_payment', ?, ?, ?)").run(req.agent.id, -cost, `Агент ${req.agent.name}: ${model.name} — ${content.slice(0, 50)}`);
   const balance = db.prepare('SELECT balance FROM agents WHERE id = ?').get(req.agent.id).balance;
 
-  res.json({ response, balance, cost });
+  res.json({ response: result.response, balance, cost });
 });
 
 // GET /api/v1/agents/messages — история сообщений агента
@@ -1142,106 +2834,492 @@ app.get('/api/v1/agents/models', agentAuthMiddleware, (req, res) => {
 // ── Admin ──────────────────────────────────────────────
 
 app.post('/api/auth/admin-login', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Заполните все поля' });
+  const { password } = req.body;
+  const email = resolveAdminLoginEmail(req.body.login || req.body.email || req.body.username);
+  if (!email || !password) return res.status(400).json({ error: 'Заполните логин и пароль' });
 
   const ip = req.ip || req.connection.remoteAddress;
   if (!rateLimit(`admin_login:${ip}`, 5, 60000)) {
     return res.status(429).json({ error: 'Слишком много попыток' });
   }
 
-  // Check admin credentials (hardcoded for simplicity, should use env vars in production)
-  if (username !== 'admin' || password !== 'admin') {
+  if (process.env.NODE_ENV === 'production' && ADMIN_PASSWORD === 'admin' && !process.env.ADMIN_PASSWORD) {
+    return res.status(503).json({ error: 'Вход в админку отключён. Задайте ADMIN_PASSWORD на сервере.' });
+  }
+
+  const adminUser = db.prepare(`
+    SELECT id, email, password
+    FROM users
+    WHERE email = ? AND COALESCE(is_admin, 0) = 1
+  `).get(email);
+
+  if (!adminUser) {
     return res.status(401).json({ error: 'Неверный логин или пароль' });
   }
 
-  // Create an admin session token
-  const token = crypto.randomBytes(32).toString('hex');
-  // Find admin user or create one
-  let adminUser = db.prepare('SELECT id FROM users WHERE email = ?').get('admin@justrouter.ru');
-  if (!adminUser) {
-    const hashedPw = await bcrypt.hash('admin', BCRYPT_ROUNDS);
-    const result = db.prepare('INSERT INTO users (email, password, name, balance) VALUES (?, ?, ?, ?)').run('admin@justrouter.ru', hashedPw, 'Admin', 0);
-    adminUser = { id: result.lastInsertRowid };
+  const valid = await bcrypt.compare(password, adminUser.password);
+  if (!valid) {
+    return res.status(401).json({ error: 'Неверный логин или пароль' });
   }
+
+  const token = crypto.randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions (user_id, token) VALUES (?, ?)').run(adminUser.id, token);
-  res.json({ token, admin: { username: 'admin' } });
+  res.json({ token, admin: { email: adminUser.email } });
 });
 
 function adminMiddleware(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'Не авторизован' });
-  const session = db.prepare('SELECT user_id FROM sessions WHERE token = ?').get(token);
+  const session = db.prepare(`
+    SELECT s.user_id, u.is_admin
+    FROM sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.token = ?
+  `).get(token);
   if (!session) return res.status(401).json({ error: 'Неверный токен' });
+  if (!session.is_admin) return res.status(403).json({ error: 'Доступ запрещён' });
   req.adminUserId = session.user_id;
   next();
 }
 
+// ── Analytics ingest for OpenClaw ──
+app.post('/api/analytics/events', publicWriteRateLimit, (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  if (!rateLimit(`analytics_events:${ip}`, 120, 60000)) {
+    return res.status(429).json({ error: 'Слишком много событий, попробуйте позже' });
+  }
+
+  const body = req.body || {};
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  let userId = null;
+  if (token) {
+    const session = db.prepare('SELECT user_id FROM sessions WHERE token = ?').get(token);
+    if (session) userId = session.user_id;
+  }
+
+  const id = recordAnalyticsEvent(db, {
+    ...body,
+    user_id: body.user_id ?? userId,
+    referrer: body.referrer || req.get('referer') || req.get('referrer') || '',
+  });
+
+  if (!id) {
+    return res.status(400).json({ error: 'Некорректное событие' });
+  }
+
+  res.json({ ok: true, id });
+});
+
 // ── Admin: Overview stats ──
 app.get('/api/admin/overview', adminMiddleware, (req, res) => {
-  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users WHERE COALESCE(is_admin, 0) = 0').get().count;
   const totalAgents = db.prepare('SELECT COUNT(*) as count FROM agents').get().count;
   const totalMessages = db.prepare('SELECT COUNT(*) as count FROM messages').get().count;
   const totalModels = db.prepare('SELECT COUNT(*) as count FROM models').get().count;
-  const totalRevenue = db.prepare("SELECT COALESCE(SUM(ABS(amount)), 0) as t FROM transactions WHERE amount < 0").get().t;
-  const totalTopups = db.prepare("SELECT COALESCE(SUM(amount), 0) as t FROM transactions WHERE amount > 0").get().t;
+  const finance = getAdminFinanceStats(db);
   const messagesToday = db.prepare("SELECT COUNT(*) as count FROM messages WHERE created_at >= datetime('now', '-1 day')").get().count;
-  const usersToday = db.prepare("SELECT COUNT(*) as count FROM users WHERE created_at >= datetime('now', '-1 day')").get().count;
+  const usersToday = db.prepare("SELECT COUNT(*) as count FROM users WHERE COALESCE(is_admin, 0) = 0 AND created_at >= datetime('now', '-1 day')").get().count;
   const topModels = db.prepare('SELECT model_id, COUNT(*) as count FROM messages GROUP BY model_id ORDER BY count DESC LIMIT 5').all();
 
-  // Revenue by day for chart (last 14 days)
-  const revenueChart = db.prepare(`
+  const spendChart = db.prepare(`
     SELECT strftime('%Y-%m-%d', created_at) as label,
-           COALESCE(SUM(ABS(amount)), 0) as revenue
-    FROM transactions WHERE amount < 0 AND created_at >= datetime('now', '-14 days')
-    GROUP BY label ORDER BY label ASC
-  `).all();
+           COALESCE(SUM(ABS(amount)), 0) as total_spent,
+           COALESCE(SUM(COALESCE(bonus_amount, 0)), 0) as bonus_spent
+    FROM transactions
+    WHERE amount < 0
+      AND type IN ('user_payment', 'agent_payment')
+      AND created_at >= datetime('now', '-14 days')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all().map((row) => ({
+    label: row.label,
+    real_spent: Math.max(0, Number(row.total_spent) - Number(row.bonus_spent)),
+    bonus_spent: Number(row.bonus_spent),
+    total_spent: Number(row.total_spent),
+  }));
+
+  const topupsChart = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at) as label,
+           COALESCE(SUM(amount), 0) as total_topups
+    FROM transactions
+    WHERE type = 'topup' AND amount > 0
+      AND created_at >= datetime('now', '-14 days')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all().map((row) => ({
+    label: row.label,
+    topups: Number(row.total_topups),
+  }));
 
   res.json({
     total_users: totalUsers,
     total_agents: totalAgents,
     total_messages: totalMessages,
     total_models: totalModels,
-    total_revenue: totalRevenue,
-    total_topups: totalTopups,
+    finance,
+    total_revenue: finance.real_spent,
+    total_topups: finance.real_topups,
     messages_today: messagesToday,
     users_today: usersToday,
     top_models: topModels,
-    revenue_chart: revenueChart,
+    spend_chart: spendChart,
+    topups_chart: topupsChart,
   });
 });
 
 // ── Admin: Users list ──
+const ADMIN_USER_FINANCE_SQL = `
+  SELECT
+    u.id,
+    u.email,
+    u.name,
+    u.balance,
+    u.bonus_balance,
+    u.created_at,
+    u.corporate,
+    COALESCE(topups.real_topups, 0) AS real_topups,
+    COALESCE(spent.total_spent, 0) AS total_spent,
+    COALESCE(spent.bonus_spent, 0) AS bonus_spent,
+    COALESCE(bonus_issued.bonuses_issued, 0) AS bonuses_issued
+  FROM users u
+  LEFT JOIN (
+    SELECT user_id, SUM(amount) AS real_topups
+    FROM transactions
+    WHERE type = 'topup' AND amount > 0
+    GROUP BY user_id
+  ) topups ON topups.user_id = u.id
+  LEFT JOIN (
+    SELECT user_id,
+      SUM(ABS(amount)) AS total_spent,
+      SUM(COALESCE(bonus_amount, 0)) AS bonus_spent
+    FROM transactions
+    WHERE type IN ('user_payment', 'agent_payment') AND amount < 0
+    GROUP BY user_id
+  ) spent ON spent.user_id = u.id
+  LEFT JOIN (
+    SELECT user_id, SUM(amount) AS bonuses_issued
+    FROM transactions
+    WHERE type = 'referral_bonus' AND amount > 0
+    GROUP BY user_id
+  ) bonus_issued ON bonus_issued.user_id = u.id
+`;
+
+function mapAdminUserRow(row) {
+  const finance = getUserFinanceStats(row);
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    balance: row.balance,
+    created_at: row.created_at,
+    bonus_balance: finance.bonus_balance,
+    bonuses_issued: finance.bonuses_issued,
+    bonus_spent: finance.bonus_spent,
+    real_topups: finance.real_topups,
+    real_spent: finance.real_spent,
+    cash_margin: finance.cash_margin,
+    margin_percent: finance.margin_percent,
+    profit: finance.profit,
+    corporate: !!row.corporate,
+  };
+}
+
 app.get('/api/admin/users', adminMiddleware, (req, res) => {
-  const { search, page = 1, limit = 20 } = req.query;
+  const { search, corporate, page = 1, limit = 20 } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
   let where = '';
   const params = [];
   if (search) {
-    where = 'WHERE (email LIKE ? OR name LIKE ?)';
+    where = 'WHERE (u.email LIKE ? OR u.name LIKE ?)';
     const q = `%${search}%`;
     params.push(q, q);
   }
-  const total = db.prepare(`SELECT COUNT(*) as count FROM users ${where}`).get(...params).count;
-  const users = db.prepare(`SELECT id, email, name, balance, created_at FROM users ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, parseInt(limit), offset);
-  res.json({ users, total, page: parseInt(page), limit: parseInt(limit) });
+  if (corporate === '1') {
+    where = where ? where + ' AND u.corporate = 1' : 'WHERE u.corporate = 1';
+  }
+  const total = db.prepare(`SELECT COUNT(*) as count FROM users u ${where.replace(/\b(email|name)\b/g, 'u.$1')}`).get(...params).count;
+  const allRows = db.prepare(`${ADMIN_USER_FINANCE_SQL} ${where} ORDER BY u.created_at DESC`).all(...params);
+  const allUsers = allRows.map(mapAdminUserRow);
+  const users = allUsers.slice(offset, offset + parseInt(limit));
+  const totals = sumUserFinanceStats(allUsers);
+  res.json({ users, totals, total, page: parseInt(page), limit: parseInt(limit) });
+});
+
+// ── Admin: Users dashboard ──
+app.get('/api/admin/users/dashboard', adminMiddleware, (req, res) => {
+  const days = Math.min(90, Math.max(7, Number(req.query.days) || 14));
+
+  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users WHERE COALESCE(is_admin, 0) = 0').get().count;
+  const usersToday = db.prepare("SELECT COUNT(*) as count FROM users WHERE COALESCE(is_admin, 0) = 0 AND created_at >= datetime('now', '-1 day')").get().count;
+  const usersThisWeek = db.prepare("SELECT COUNT(*) as count FROM users WHERE COALESCE(is_admin, 0) = 0 AND created_at >= datetime('now', '-7 days')").get().count;
+  const activeToday = db.prepare("SELECT COUNT(DISTINCT user_id) as count FROM messages WHERE created_at >= datetime('now', '-1 day')").get().count;
+  const activeThisWeek = db.prepare("SELECT COUNT(DISTINCT user_id) as count FROM messages WHERE created_at >= datetime('now', '-7 days')").get().count;
+
+  // Registrations per day
+  const registrationChart = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at) as label, COUNT(*) as count
+    FROM users
+    WHERE COALESCE(is_admin, 0) = 0
+      AND created_at >= datetime('now', '-' || ? || ' days')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all(days);
+
+  // Activity: messages per day
+  const activityChart = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at) as label, COUNT(*) as count
+    FROM messages
+    WHERE role = 'user'
+      AND created_at >= datetime('now', '-' || ? || ' days')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all(days);
+
+  // Active users per day
+  const activeUsersChart = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at) as label, COUNT(DISTINCT user_id) as count
+    FROM messages
+    WHERE role = 'user'
+      AND created_at >= datetime('now', '-' || ? || ' days')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all(days);
+
+  // User signups by hour (last 24h)
+  const hourlySignups = db.prepare(`
+    SELECT strftime('%H:00', created_at) as label, COUNT(*) as count
+    FROM users
+    WHERE COALESCE(is_admin, 0) = 0
+      AND created_at >= datetime('now', '-24 hours')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all();
+
+  // Agent activity per day (from agent_messages)
+  const agentChart = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at) as label, COUNT(*) as count
+    FROM agent_messages
+    WHERE created_at >= datetime('now', '-' || ? || ' days')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all(days);
+
+  res.json({
+    totals: {
+      total_users: totalUsers,
+      users_today: usersToday,
+      users_this_week: usersThisWeek,
+      active_today: activeToday,
+      active_this_week: activeThisWeek,
+    },
+    registration_chart: registrationChart,
+    activity_chart: activityChart,
+    active_users_chart: activeUsersChart,
+    hourly_signups: hourlySignups,
+    agent_chart: agentChart,
+    days,
+  });
 });
 
 app.get('/api/admin/users/:id', adminMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, email, name, balance, created_at FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare(`
+    SELECT id, email, name, balance, bonus_balance, created_at, referral_code, referred_by_user_id, banned, corporate
+    FROM users WHERE id = ?
+  `).get(req.params.id);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
   const msgCount = db.prepare('SELECT COUNT(*) as count FROM messages WHERE user_id = ?').get(user.id).count;
+  const userRequests = db.prepare("SELECT COUNT(*) as count FROM messages WHERE user_id = ? AND role = 'user'").get(user.id).count;
+  const freeRequests = db.prepare("SELECT COUNT(*) as count FROM messages WHERE user_id = ? AND role = 'user' AND is_free = 1").get(user.id).count;
   const paidTotal = db.prepare("SELECT COALESCE(SUM(ABS(amount)), 0) as t FROM transactions WHERE user_id = ? AND amount < 0").get(user.id).t;
-  res.json({ ...user, message_count: msgCount, total_paid: paidTotal });
+  // OpenRouter реальная себестоимость = charged / PRICE_MULTIPLIER (costRubFromOpenRouterUsage × markup)
+  const openrouterCost = paidTotal > 0 ? Math.max(0.01, paidTotal / PRICE_MULTIPLIER) : 0;
+  const justrouterRevenue = Math.max(0, paidTotal - openrouterCost);
+  const marginPercent = paidTotal > 0 ? (justrouterRevenue / paidTotal) * 100 : null;
+  const topModels = db.prepare(`
+    SELECT model_id, COUNT(*) as count
+    FROM messages
+    WHERE user_id = ? AND role = 'user'
+    GROUP BY model_id
+    ORDER BY count DESC
+    LIMIT 5
+  `).all(user.id);
+  const referral = getAdminUserReferralInfo(db, user.id);
+  res.json({
+    ...user,
+    message_count: msgCount,
+    user_requests: userRequests,
+    free_requests: freeRequests,
+    total_paid: paidTotal,
+    openrouter_cost: openrouterCost,
+    justrouter_revenue: justrouterRevenue,
+    margin_percent: marginPercent,
+    top_models: topModels,
+    referral,
+  });
+});
+
+app.get('/api/admin/referrals', adminMiddleware, (req, res) => {
+  try {
+    res.json(getAdminReferralOverview(db));
+  } catch (e) {
+    console.error('[admin/referrals]', e);
+    res.status(500).json({ error: 'Не удалось загрузить статистику рефералов' });
+  }
+});
+
+app.get('/api/admin/users/:id/transactions', adminMiddleware, (req, res) => {
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const { page = 1, limit = 30 } = req.query;
+  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const total = db.prepare('SELECT COUNT(*) as count FROM transactions WHERE user_id = ?').get(user.id).count;
+  const transactions = db.prepare(`
+    SELECT id, type, amount, description, created_at
+    FROM transactions
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(user.id, parseInt(limit), offset);
+  res.json({ transactions, total, page: parseInt(page), limit: parseInt(limit) });
+});
+
+app.get('/api/admin/users/:id/messages', adminMiddleware, (req, res) => {
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const { page = 1, limit = 30, model_id } = req.query;
+  const offset = (parseInt(page) - 1) * parseInt(limit);
+  let where = 'WHERE user_id = ?';
+  const params = [user.id];
+  if (model_id) {
+    where += ' AND model_id = ?';
+    params.push(model_id);
+  }
+  const total = db.prepare(`SELECT COUNT(*) as count FROM messages ${where}`).get(...params).count;
+  const messages = db.prepare(`
+    SELECT id, model_id, role, is_free,
+           CASE WHEN LENGTH(content) > 200 THEN SUBSTR(content, 1, 200) || '…' ELSE content END as content,
+           created_at
+    FROM messages
+    ${where}
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, parseInt(limit), offset);
+  res.json({ messages, total, page: parseInt(page), limit: parseInt(limit) });
 });
 
 app.patch('/api/admin/users/:id/balance', adminMiddleware, (req, res) => {
-  const { amount, reason } = req.body;
-  if (!amount) return res.status(400).json({ error: 'amount обязателен' });
-  db.prepare('UPDATE users SET balance = MAX(0, balance + ?) WHERE id = ?').run(parseFloat(amount), req.params.id);
-  db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('admin_adjustment', ?, ?, ?)").run(req.params.id, parseFloat(amount), reason || 'Корректировка администратором');
+  const amt = parseFloat(req.body.amount);
+  if (!Number.isFinite(amt)) return res.status(400).json({ error: 'amount обязателен и должен быть числом' });
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  db.prepare('UPDATE users SET balance = MAX(0, balance + ?) WHERE id = ?').run(amt, req.params.id);
+  db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('admin_adjustment', ?, ?, ?)").run(req.params.id, amt, req.body.reason || 'Корректировка администратором');
   const balance = db.prepare('SELECT balance FROM users WHERE id = ?').get(req.params.id).balance;
   res.json({ balance });
+});
+
+app.patch('/api/admin/users/:id/ban', adminMiddleware, (req, res) => {
+  const user = db.prepare('SELECT id, banned FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const newStatus = user.banned ? 0 : 1;
+  db.prepare('UPDATE users SET banned = ? WHERE id = ?').run(newStatus, req.params.id);
+  res.json({ banned: !!newStatus, message: newStatus ? 'Пользователь заблокирован' : 'Пользователь разблокирован' });
+});
+
+app.patch('/api/admin/users/:id/corporate', adminMiddleware, (req, res) => {
+  const user = db.prepare('SELECT id, corporate FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const newStatus = user.corporate ? 0 : 1;
+  db.prepare('UPDATE users SET corporate = ? WHERE id = ?').run(newStatus, req.params.id);
+  res.json({ corporate: !!newStatus, message: newStatus ? 'Пользователь добавлен в корпоративные' : 'Пользователь удалён из корпоративных' });
+});
+
+app.delete('/api/admin/users/:id', adminMiddleware, (req, res) => {
+  const user = db.prepare('SELECT id, email, name, is_admin FROM users WHERE id = ?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+
+  if (user.is_admin) {
+    return res.status(403).json({ error: 'Нельзя удалить администратора' });
+  }
+
+  try {
+    const tx = db.transaction(function() {
+      deleteAllUserData(db, user.id);
+    });
+    tx();
+
+    console.log('[admin] user deleted', { user_id: user.id, email: user.email });
+    res.json({ message: 'Пользователь удалён' });
+  } catch (err) {
+    console.error('[admin] user delete error', err);
+    res.status(500).json({ error: 'Ошибка при удалении пользователя: ' + err.message });
+  }
+});
+
+/**
+ * Delete all data for a single user (used by single and bulk delete).
+ * Must be called inside a transaction.
+ */
+function deleteAllUserData(dbConn, userId) {
+  dbConn.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM messages WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM telegram_payments WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM telegram_link_codes WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM telegram_links WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM analytics_events WHERE user_id = ?').run(userId);
+  const agentIds = dbConn.prepare('SELECT id FROM agents WHERE owner_user_id = ?').all(userId).map(r => r.id);
+  for (const aid of agentIds) {
+    dbConn.prepare('DELETE FROM agent_sessions WHERE agent_id = ?').run(aid);
+    dbConn.prepare('DELETE FROM agent_messages WHERE agent_id = ?').run(aid);
+  }
+  dbConn.prepare('DELETE FROM agents WHERE owner_user_id = ?').run(userId);
+  const convIds = dbConn.prepare('SELECT id FROM support_conversations WHERE user_id = ?').all(userId).map(r => r.id);
+  for (const cid of convIds) {
+    dbConn.prepare('DELETE FROM support_messages WHERE conversation_id = ?').run(cid);
+  }
+  dbConn.prepare('DELETE FROM support_conversations WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM site_purchases WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM video_jobs WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM yookassa_payments WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM subscriptions WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM referrals WHERE referrer_user_id = ? OR referred_user_id = ?').run(userId, userId);
+  dbConn.prepare('UPDATE users SET referred_by_user_id = NULL WHERE referred_by_user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM users WHERE id = ?').run(userId);
+}
+
+app.post('/api/admin/users/bulk-delete', adminMiddleware, (req, res) => {
+  const { user_ids } = req.body;
+  if (!Array.isArray(user_ids) || user_ids.length === 0) {
+    return res.status(400).json({ error: 'user_ids должен быть непустым массивом' });
+  }
+
+  // Filter out admins
+  const adminIds = db.prepare(
+    `SELECT id FROM users WHERE id IN (${user_ids.map(() => '?').join(',')}) AND is_admin = 1`
+  ).all(...user_ids).map(r => r.id);
+
+  const validIds = user_ids.filter(function(id) { return !adminIds.includes(id); });
+  if (validIds.length === 0) {
+    return res.status(403).json({ error: 'Нельзя удалить администраторов' });
+  }
+
+  let deletedCount = 0;
+  try {
+    const tx = db.transaction(function() {
+      for (const id of validIds) {
+        deleteAllUserData(db, id);
+        deletedCount++;
+      }
+    });
+    tx();
+    console.log('[admin] bulk delete', { deleted: deletedCount, skipped_admins: adminIds.length });
+    res.json({ deleted: deletedCount, skipped_admins: adminIds.length });
+  } catch (err) {
+    console.error('[admin] bulk delete error', err);
+    res.status(500).json({ error: 'Ошибка при массовом удалении: ' + err.message });
+  }
 });
 
 app.post('/api/admin/telegram/broadcast', adminMiddleware, async (req, res) => {
@@ -1261,6 +3339,114 @@ app.post('/api/admin/telegram/broadcast', adminMiddleware, async (req, res) => {
   }
 
   res.json({ sent, total: links.length });
+});
+
+// ── Admin: Promo codes ──
+app.get('/api/admin/promo-codes', adminMiddleware, (req, res) => {
+  const codes = db.prepare('SELECT * FROM promo_codes ORDER BY created_at DESC').all();
+  res.json(codes);
+});
+
+app.post('/api/admin/promo-codes', adminMiddleware, (req, res) => {
+  const { code, amount_type, amount_value, max_uses, expires_at, description } = req.body;
+  if (!code || !amount_value || amount_value <= 0) {
+    return res.status(400).json({ error: 'code и amount_value > 0 обязательны' });
+  }
+  const codeUpper = code.toUpperCase().trim();
+  if (codeUpper.length < 3) {
+    return res.status(400).json({ error: 'Код должен быть минимум 3 символа' });
+  }
+  const type = amount_type === 'percent' ? 'percent' : 'fixed';
+  const uses = Math.max(1, parseInt(max_uses) || 1);
+  try {
+    db.prepare('INSERT INTO promo_codes (code, amount_type, amount_value, max_uses, expires_at, description) VALUES (?, ?, ?, ?, ?, ?)').run(
+      codeUpper, type, parseFloat(amount_value), uses, expires_at || null, description || null
+    );
+    res.json({ success: true, message: 'Промокод создан' });
+  } catch (e) {
+    if (e.message && e.message.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'Такой код уже существует' });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch('/api/admin/promo-codes/:id', adminMiddleware, (req, res) => {
+  const promo = db.prepare('SELECT id, is_active FROM promo_codes WHERE id = ?').get(req.params.id);
+  if (!promo) return res.status(404).json({ error: 'Промокод не найден' });
+  const newStatus = promo.is_active ? 0 : 1;
+  db.prepare('UPDATE promo_codes SET is_active = ? WHERE id = ?').run(newStatus, req.params.id);
+  res.json({ is_active: !!newStatus, message: newStatus ? 'Промокод активирован' : 'Промокод деактивирован' });
+});
+
+app.delete('/api/admin/promo-codes/:id', adminMiddleware, (req, res) => {
+  const promo = db.prepare('SELECT id FROM promo_codes WHERE id = ?').get(req.params.id);
+  if (!promo) return res.status(404).json({ error: 'Промокод не найден' });
+  db.prepare('DELETE FROM promo_redemptions WHERE promo_code_id = ?').run(req.params.id);
+  db.prepare('DELETE FROM promo_codes WHERE id = ?').run(req.params.id);
+  res.json({ message: 'Промокод удалён' });
+});
+
+// ── Public: Apply a promo code ──
+app.post('/api/promo/apply', authMiddleware, (req, res) => {
+  const { code } = req.body;
+  if (!code || typeof code !== 'string' || code.trim().length < 3) {
+    return res.status(400).json({ error: 'Введите код' });
+  }
+  const codeUpper = code.toUpperCase().trim();
+  const promo = db.prepare('SELECT * FROM promo_codes WHERE code = ?').get(codeUpper);
+  if (!promo) return res.status(404).json({ error: 'Промокод не найден' });
+  if (!promo.is_active) return res.status(400).json({ error: 'Промокод не активен' });
+  if (promo.expires_at && new Date(promo.expires_at).getTime() < Date.now()) {
+    return res.status(400).json({ error: 'Срок действия промокода истёк' });
+  }
+  if (promo.used_count >= promo.max_uses) {
+    return res.status(400).json({ error: 'Промокод больше не действует (исчерпан лимит)' });
+  }
+  // Check if user already used this code
+  const alreadyUsed = db.prepare('SELECT id FROM promo_redemptions WHERE promo_code_id = ? AND user_id = ?').get(promo.id, req.user.id);
+  if (alreadyUsed) {
+    return res.status(400).json({ error: 'Вы уже использовали этот промокод' });
+  }
+  // Calculate bonus
+  var bonusAmount = promo.amount_type === 'percent'
+    ? Math.round(promo.amount_value * 100) / 100 // just the percentage value (e.g. 10%)
+    : promo.amount_value;
+  // For percent, it's a flat bonus equal to the percent value in rubles for simplicity
+  // Actually: percent means % of what? Let's make it simple — percent means percent of the amount_value as rubles
+  // Or better: percent = percentage of 100 rubles baseline. Actually, let's keep it dead simple:
+  // fixed = add N rubles, percent = add N rubles (same behavior for MVP, just tracked differently)
+  // Actually no, let's make percent meaningful: percent = N% bonus on the amount_value = N rubles added as bonus
+
+  const tx = db.transaction(function() {
+    // Add to bonus balance
+    db.prepare('UPDATE users SET bonus_balance = COALESCE(bonus_balance, 0) + ? WHERE id = ?').run(bonusAmount, req.user.id);
+    // Record transaction
+    db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('promo_bonus', ?, ?, ?)").run(
+      req.user.id, bonusAmount, 'Промокод: ' + codeUpper + (promo.description ? ' (' + promo.description + ')' : '')
+    );
+    // Record redemption
+    db.prepare('INSERT INTO promo_redemptions (promo_code_id, user_id, bonus_amount) VALUES (?, ?, ?)').run(promo.id, req.user.id, bonusAmount);
+    // Increment usage
+    db.prepare('UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?').run(promo.id);
+  });
+  tx();
+
+  res.json({ success: true, amount: bonusAmount, message: 'Промокод активирован! +' + bonusAmount + ' ₽' });
+});
+
+registerContentRoutes(app, { db, adminMiddleware });
+
+// ── Admin: Subscriptions list ──
+app.get('/api/admin/subscriptions', adminMiddleware, (req, res) => {
+  const subs = db.prepare(`
+    SELECT s.id, s.user_id, s.plan_type, s.period, s.status, s.tier, s.start_date, s.end_date, s.created_at,
+           u.name as user_name, u.email as user_email, u.balance
+    FROM subscriptions s
+    JOIN users u ON u.id = s.user_id
+    ORDER BY s.created_at DESC
+  `).all();
+  res.json(subs);
 });
 
 // ── Admin: Models list ──
@@ -1310,7 +3496,7 @@ app.delete('/api/admin/models/:id', adminMiddleware, (req, res) => {
 
 app.post('/api/admin/models/sync-openrouter', adminMiddleware, async (req, res) => {
   if (!OPENROUTER_API_KEY) {
-    return res.status(400).json({ error: 'OPENROUTER_API_KEY не настроен' });
+    return res.status(400).json({ error: 'Ключ провайдера моделей не настроен' });
   }
 
   try {
@@ -1318,11 +3504,12 @@ app.post('/api/admin/models/sync-openrouter', adminMiddleware, async (req, res) 
       db,
       apiKey: OPENROUTER_API_KEY,
       proxyUrl: OPENROUTER_PROXY_URL,
+      forceRetranslate: Boolean(req.body?.force),
     });
     res.json({ success: true, count });
   } catch (e) {
     console.error('[openrouter] manual sync failed', e);
-    res.status(500).json({ error: e.message || 'Не удалось синхронизировать модели OpenRouter' });
+    res.status(500).json({ error: e.message || 'Не удалось синхронизировать каталог моделей' });
   }
 });
 
@@ -1384,6 +3571,244 @@ app.get('/api/admin/provider-stats', adminMiddleware, (req, res) => {
   res.json({ providers: enriched, total_messages: totalMessages });
 });
 
+// ── Admin: OpenClaw analytics ──
+app.get('/api/admin/analytics/summary', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 12);
+  const path = String(req.query.path || '');
+  res.json(getAnalyticsSummary(db, { hours, path }));
+});
+
+app.get('/api/admin/analytics/heatmap', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '/');
+  const gridSize = Number(req.query.grid_size || 24);
+  const viewport = String(req.query.viewport || '');
+  res.json({
+    path,
+    hours,
+    grid_size: gridSize,
+    viewport,
+    points: getHeatmapData(db, { path, hours, gridSize, viewport }),
+  });
+});
+
+app.get('/api/admin/analytics/scroll-depth', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '');
+  res.json({ hours, path, buckets: getScrollDepthData(db, { hours, path }) });
+});
+
+app.get('/api/admin/analytics/mouse-heatmap', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '');
+  const gridSize = Number(req.query.grid_size || 32);
+  const viewport = String(req.query.viewport || '');
+  res.json({ hours, path, grid_size: gridSize, viewport, points: getMouseHeatmapData(db, { hours, path, gridSize, viewport }) });
+});
+
+app.get('/api/admin/analytics/rage-clicks', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '');
+  res.json({ hours, path, items: getRageClickData(db, { hours, path }) });
+});
+
+app.get('/api/admin/analytics/sessions', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  res.json({ hours, ...getSessionAnalytics(db, { hours }) });
+});
+
+app.get('/api/admin/analytics/compare', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 12);
+  const pathsRaw = String(req.query.paths || '/,/models,/pricing,/blog,/demo');
+  const paths = pathsRaw.split(',').map((item) => item.trim()).filter(Boolean).slice(0, 8);
+
+  const items = paths.map((path) => {
+    const summary = getAnalyticsSummary(db, { hours, path });
+    const heatmapPoints = getHeatmapData(db, { path, hours: Math.max(24, hours), gridSize: 24 });
+    const topHeatPoints = [...heatmapPoints]
+      .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
+      .slice(0, 3);
+
+    return {
+      path,
+      summary,
+      heatmap_points: heatmapPoints,
+      top_heat_points: topHeatPoints,
+    };
+  });
+
+  res.json({
+    hours,
+    paths,
+    items,
+  });
+});
+
+app.post('/api/admin/analytics/reports', adminMiddleware, (req, res) => {
+  const reportType = String(req.body?.report_type || req.body?.type || 'openclaw_12h');
+  const periodStart = String(req.body?.period_start || '');
+  const periodEnd = String(req.body?.period_end || '');
+  const summary = req.body?.summary || req.body?.data || {};
+  const reportId = storeAnalyticsReport(db, { reportType, periodStart, periodEnd, summary });
+  if (!reportId) return res.status(400).json({ error: 'Некорректный отчёт' });
+  res.json({ ok: true, id: reportId });
+});
+
+app.post('/api/admin/analytics/reports/generate', adminMiddleware, (req, res) => {
+  const hours = Number(req.body?.hours || 12);
+  const path = String(req.body?.path || '/');
+  const report = generateAndStoreOpenClawReport(db, { hours, path });
+  broadcastOpenClawReportToAdmins(db, report).catch((e) => {
+    console.error('[openclaw] telegram broadcast failed', e.message);
+  });
+  res.json({ ok: true, report });
+});
+
+app.get('/api/admin/analytics/reports/latest', adminMiddleware, (req, res) => {
+  const reportType = String(req.query.report_type || 'openclaw_12h');
+  const latest = getLatestOpenClawReport(db, reportType);
+  if (!latest) return res.status(404).json({ error: 'Отчёт не найден' });
+  res.json(latest);
+});
+
+app.get('/api/admin/analytics/reports', adminMiddleware, (req, res) => {
+  const reportType = String(req.query.report_type || 'openclaw_12h');
+  const limit = Math.max(1, Math.min(50, Number(req.query.limit || 20) || 20));
+  const rows = db.prepare(`
+    SELECT *
+    FROM analytics_reports
+    WHERE report_type = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(reportType, limit).map((row) => {
+    try {
+      return { ...row, summary: JSON.parse(row.summary_json) };
+    } catch {
+      return { ...row, summary: null };
+    }
+  });
+  res.json({ report_type: reportType, reports: rows });
+});
+
+// ── Admin: Funnel analytics ──
+app.get('/api/admin/analytics/funnel', adminMiddleware, (req, res) => {
+  const days = Math.min(365, Math.max(1, Number(req.query.days) || 30));
+  const sinceExpr = `datetime('now', '-${days} days')`;
+
+  // Helper: count distinct visitors for a specific funnel event text
+  function funnelCount(eventText) {
+    const row = db.prepare(`
+      SELECT COUNT(DISTINCT visitor_id) as count
+      FROM analytics_events
+      WHERE event_type = 'funnel' AND text = ?
+        AND created_at >= ${sinceExpr}
+    `).get(eventText);
+    return Number(row?.count || 0);
+  }
+
+  // 1. Unique visitors (any pageview or event)
+  const uniqueVisitors = Number(db.prepare(`
+    SELECT COUNT(DISTINCT visitor_id) as count
+    FROM analytics_events
+    WHERE created_at >= ${sinceExpr}
+  `).get().count);
+
+  // 2. Registration started
+  const regStarted = funnelCount('registration_start');
+
+  // 3. Code sent
+  const codeSent = funnelCount('registration_code_sent');
+
+  // 4. Registration completed (from analytics_events + users table for cross-ref)
+  const regCompleted = Number(db.prepare(`
+    SELECT COUNT(*) as count FROM users
+    WHERE created_at >= ${sinceExpr}
+      AND COALESCE(is_admin, 0) = 0
+  `).get().count);
+  const regCompletedAnalytics = funnelCount('registration_complete');
+
+  // 5. Topup started (from analytics_events)
+  const topupStarted = funnelCount('topup_start') + funnelCount('subscription_start');
+
+  // 6. Topup completed (from yookassa_payments + analytics_events)
+  const topupCompleted = Number(db.prepare(`
+    SELECT COUNT(DISTINCT user_id) as count
+    FROM yookassa_payments
+    WHERE status = 'succeeded'
+      AND created_at >= ${sinceExpr}
+  `).get().count);
+  const topupCompletedAnalytics = funnelCount('topup_complete') + funnelCount('subscription_complete');
+
+  // Source breakdown — get earliest pageview referrer/utm per visitor and classify
+  const sourceBreakdown = db.prepare(`
+    WITH visitor_first_event AS (
+      SELECT visitor_id, MIN(created_at) as first_ts
+      FROM analytics_events
+      WHERE event_type = 'pageview' AND created_at >= ${sinceExpr}
+      GROUP BY visitor_id
+    ),
+    visitor_source AS (
+      SELECT e.visitor_id, e.referrer, e.metadata,
+        CASE
+          WHEN e.metadata LIKE '%utm_source%' THEN 'utm'
+          WHEN e.referrer IS NULL OR e.referrer = '' THEN 'direct'
+          WHEN e.referrer LIKE '%google.%' OR e.referrer LIKE '%yandex.%' OR e.referrer LIKE '%bing.%' OR e.referrer LIKE '%yahoo.%' THEN 'organic'
+          ELSE 'referral'
+        END as source
+      FROM analytics_events e
+      JOIN visitor_first_event v ON v.visitor_id = e.visitor_id AND v.first_ts = e.created_at
+      WHERE e.event_type = 'pageview'
+    )
+    SELECT source, COUNT(*) as count
+    FROM visitor_source
+    GROUP BY source
+    ORDER BY count DESC
+  `).all();
+
+  // Timeline: funnel events per day
+  const timeline = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at) as label,
+      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text = 'registration_start' THEN visitor_id END) as reg_started,
+      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text = 'registration_code_sent' THEN visitor_id END) as code_sent,
+      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text = 'registration_complete' THEN visitor_id END) as reg_completed,
+      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text IN ('topup_start','subscription_start') THEN visitor_id END) as payment_started,
+      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text IN ('topup_complete','subscription_complete') THEN visitor_id END) as payment_completed
+    FROM analytics_events
+    WHERE event_type = 'funnel'
+      AND created_at >= ${sinceExpr}
+    GROUP BY label
+    ORDER BY label ASC
+  `).all();
+
+  const stages = [
+    { id: 'site_visits', label: 'Посетили сайт', count: uniqueVisitors, pct: 100 },
+    { id: 'registration_start', label: 'Начали регистрацию', count: regStarted, pct: uniqueVisitors > 0 ? Math.round((regStarted / uniqueVisitors) * 10000) / 100 : 0 },
+    { id: 'code_sent', label: 'Код отправлен', count: codeSent, pct: regStarted > 0 ? Math.round((codeSent / regStarted) * 10000) / 100 : 0 },
+    { id: 'registration_complete', label: 'Регистрация завершена', count: regCompleted, pct: codeSent > 0 ? Math.round((regCompleted / codeSent) * 10000) / 100 : 0 },
+    { id: 'topup_start', label: 'Начали оплату', count: topupStarted, pct: regCompleted > 0 ? Math.round((topupStarted / regCompleted) * 10000) / 100 : 0 },
+    { id: 'topup_complete', label: 'Оплата завершена', count: topupCompleted, pct: topupStarted > 0 ? Math.round((topupCompleted / topupStarted) * 10000) / 100 : 0 },
+  ];
+
+  // Overall conversion from visit to payment
+  const overallConversion = uniqueVisitors > 0 ? Math.round((topupCompleted / uniqueVisitors) * 10000) / 100 : 0;
+
+  // Who started topup but didn't complete? (recent 7 days for fresh data)
+  const abandonedPayments = Number(db.prepare(`
+    SELECT COUNT(*) as count
+    FROM yookassa_payments
+    WHERE status = 'pending' AND created_at >= datetime('now', '-7 days')
+  `).get().count);
+
+  res.json({
+    days,
+    stages,
+    overall_conversion_pct: overallConversion,
+    abandoned_payments_7d: abandonedPayments,
+    source_breakdown: sourceBreakdown,
+    timeline,
+  });
+});
+
 // ── Admin: Test provider API key ──
 app.post('/api/admin/providers/:id/test', adminMiddleware, async (req, res) => {
   const provider = db.prepare('SELECT * FROM providers WHERE id = ?').get(req.params.id);
@@ -1433,25 +3858,531 @@ app.post('/api/admin/providers/:id/test', adminMiddleware, async (req, res) => {
   res.json({ success, message, latency, provider_id: provider.id });
 });
 
-// ── SPA fallback ────────────────────────────────────────
+// ── Admin: Model logs ──
+app.get('/api/admin/model-logs', adminMiddleware, (req, res) => {
+  const { page = 1, limit = 50, model_id, user_id, role, source = 'all', search } = req.query;
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 50));
+  const offset = (pageNum - 1) * limitNum;
 
-// All non-API routes serve index.html for SPA routing
-app.use((req, res, next) => {
-  if (req.path.startsWith('/api/')) return next();
-  res.sendFile(join(distPath, 'index.html'));
+  const userFilters = [];
+  const userParams = [];
+  const agentFilters = [];
+  const agentParams = [];
+
+  if (model_id) {
+    userFilters.push('m.model_id = ?');
+    userParams.push(model_id);
+    agentFilters.push('am.model_id = ?');
+    agentParams.push(model_id);
+  }
+  if (user_id) {
+    userFilters.push('m.user_id = ?');
+    userParams.push(parseInt(user_id));
+  }
+  if (role) {
+    userFilters.push('m.role = ?');
+    userParams.push(role);
+    agentFilters.push('am.role = ?');
+    agentParams.push(role);
+  }
+  if (search) {
+    const q = `%${search}%`;
+    userFilters.push('(m.content LIKE ? OR m.model_id LIKE ? OR u.email LIKE ?)');
+    userParams.push(q, q, q);
+    agentFilters.push('(am.content LIKE ? OR am.model_id LIKE ? OR a.name LIKE ?)');
+    agentParams.push(q, q, q);
+  }
+
+  const userWhere = userFilters.length ? `WHERE ${userFilters.join(' AND ')}` : '';
+  const agentWhere = agentFilters.length ? `WHERE ${agentFilters.join(' AND ')}` : '';
+
+  const userSql = `
+    SELECT
+      'user' as source, m.id, m.user_id, u.email as user_email, u.name as user_name,
+      NULL as agent_id, NULL as agent_name, m.model_id, mod.name as model_name,
+      mod.provider, mod.category, m.role, m.is_free, m.created_at,
+      CASE WHEN LENGTH(m.content) > 160 THEN SUBSTR(m.content, 1, 160) || '…' ELSE m.content END as preview,
+      LENGTH(m.content) as content_length
+    FROM messages m
+    JOIN users u ON u.id = m.user_id
+    LEFT JOIN models mod ON mod.id = m.model_id
+    ${userWhere}
+  `;
+
+  const agentSql = `
+    SELECT
+      'agent' as source, am.id, NULL as user_id, NULL as user_email, NULL as user_name,
+      am.agent_id, a.name as agent_name, am.model_id, mod.name as model_name,
+      mod.provider, mod.category, am.role, 0 as is_free, am.created_at,
+      CASE WHEN LENGTH(am.content) > 160 THEN SUBSTR(am.content, 1, 160) || '…' ELSE am.content END as preview,
+      LENGTH(am.content) as content_length
+    FROM agent_messages am
+    JOIN agents a ON a.id = am.agent_id
+    LEFT JOIN models mod ON mod.id = am.model_id
+    ${agentWhere}
+  `;
+
+  let total = 0;
+  let logs = [];
+
+  if (source === 'user' || user_id) {
+    total = db.prepare(`SELECT COUNT(*) as count FROM messages m JOIN users u ON u.id = m.user_id ${userWhere}`).get(...userParams).count;
+    logs = db.prepare(`${userSql} ORDER BY m.created_at DESC LIMIT ? OFFSET ?`).all(...userParams, limitNum, offset);
+  } else if (source === 'agent') {
+    total = db.prepare(`SELECT COUNT(*) as count FROM agent_messages am JOIN agents a ON a.id = am.agent_id ${agentWhere}`).get(...agentParams).count;
+    logs = db.prepare(`${agentSql} ORDER BY am.created_at DESC LIMIT ? OFFSET ?`).all(...agentParams, limitNum, offset);
+  } else {
+    const userCount = db.prepare(`SELECT COUNT(*) as count FROM messages m JOIN users u ON u.id = m.user_id ${userWhere}`).get(...userParams).count;
+    const agentCount = db.prepare(`SELECT COUNT(*) as count FROM agent_messages am JOIN agents a ON a.id = am.agent_id ${agentWhere}`).get(...agentParams).count;
+    total = userCount + agentCount;
+    logs = db.prepare(`
+      SELECT * FROM (
+        ${userSql}
+        UNION ALL
+        ${agentSql}
+      )
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...userParams, ...agentParams, limitNum, offset);
+  }
+
+  const models = db.prepare('SELECT id, name FROM models ORDER BY name ASC').all();
+  res.json({ logs, total, page: pageNum, limit: limitNum, models });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен на http://localhost:${PORT}`);
-  console.log(`📦 API: http://localhost:${PORT}/api`);
+// ── Admin: Model dashboard ──
+app.get('/api/admin/models/dashboard', adminMiddleware, (req, res) => {
+  const { days = 14 } = req.query;
+  const dayCount = Math.min(90, Math.max(7, parseInt(days) || 14));
+
+  const userStats = db.prepare(`
+    SELECT
+      m.model_id,
+      COUNT(*) as total_messages,
+      SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_requests,
+      COUNT(DISTINCT m.user_id) as unique_users,
+      SUM(CASE WHEN m.role = 'user' AND m.is_free = 1 THEN 1 ELSE 0 END) as free_requests,
+      SUM(CASE WHEN m.role = 'user' AND m.is_free = 0 THEN 1 ELSE 0 END) as paid_requests,
+      SUM(CASE WHEN m.created_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) as today_count
+    FROM messages m
+    GROUP BY m.model_id
+  `).all();
+
+  const agentStats = db.prepare(`
+    SELECT model_id, COUNT(*) as agent_messages
+    FROM agent_messages
+    GROUP BY model_id
+  `).all();
+
+  const agentMap = Object.fromEntries(agentStats.map((row) => [row.model_id, row.agent_messages]));
+  const allModels = db.prepare('SELECT * FROM models ORDER BY provider, name ASC').all();
+  const modelMap = Object.fromEntries(allModels.map((m) => [m.id, m]));
+  const statsMap = Object.fromEntries(userStats.map((s) => [s.model_id, s]));
+
+  const allModelIds = new Set([...Object.keys(statsMap), ...Object.keys(agentMap)]);
+  const totalUserRequests = userStats.reduce((sum, s) => sum + s.user_requests, 0);
+
+  const models = [...allModelIds].map((modelId) => {
+    const stat = statsMap[modelId] || {};
+    const meta = modelMap[modelId] || { id: modelId, name: modelId, provider: '—', category: '—', price: 0, color: '#10B981' };
+    const userRequests = stat.user_requests || 0;
+    const agentMessages = agentMap[modelId] || 0;
+    return {
+      model_id: modelId,
+      name: meta.name,
+      provider: meta.provider,
+      category: meta.category,
+      price: meta.price,
+      color: meta.color,
+      is_active: meta.is_active ?? 1,
+      total_messages: (stat.total_messages || 0) + agentMessages,
+      user_requests: userRequests,
+      agent_messages: agentMessages,
+      unique_users: stat.unique_users || 0,
+      free_requests: stat.free_requests || 0,
+      paid_requests: stat.paid_requests || 0,
+      today_count: stat.today_count || 0,
+      share_pct: totalUserRequests > 0 ? Math.round((userRequests / totalUserRequests) * 1000) / 10 : 0,
+    };
+  }).sort((a, b) => b.user_requests - a.user_requests);
+
+  const activityChart = db.prepare(`
+    SELECT strftime('%Y-%m-%d', created_at) as label, COUNT(*) as count
+    FROM messages
+    WHERE role = 'user' AND created_at >= datetime('now', '-' || ? || ' days')
+    GROUP BY label
+    ORDER BY label ASC
+  `).all(dayCount);
+
+  const categoryBreakdown = db.prepare(`
+    SELECT mod.category, COUNT(*) as count
+    FROM messages m
+    JOIN models mod ON mod.id = m.model_id
+    WHERE m.role = 'user'
+    GROUP BY mod.category
+    ORDER BY count DESC
+  `).all();
+
+  const categoryTotal = categoryBreakdown.reduce((sum, row) => sum + row.count, 0);
+  const categories = categoryBreakdown.map((row) => ({
+    category: row.category,
+    count: row.count,
+    pct: categoryTotal > 0 ? Math.round((row.count / categoryTotal) * 1000) / 10 : 0,
+  }));
+
+  const summary = {
+    total_user_requests: totalUserRequests,
+    total_today: models.reduce((sum, m) => sum + m.today_count, 0),
+    total_free: models.reduce((sum, m) => sum + m.free_requests, 0),
+    total_paid: models.reduce((sum, m) => sum + m.paid_requests, 0),
+    models_used: models.filter((m) => m.user_requests > 0).length,
+    total_models: allModels.length,
+    unique_users: db.prepare('SELECT COUNT(DISTINCT user_id) as count FROM messages WHERE role = ?').get('user').count,
+  };
+
+  res.json({ summary, models, activity_chart: activityChart, categories, days: dayCount });
+});
+
+// ── Admin: Support chat ──
+
+app.get('/api/admin/support/conversations', adminMiddleware, (req, res) => {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+  const offset = (page - 1) * limit;
+  const search = String(req.query.search || '').trim();
+
+  let where = 'WHERE 1=1';
+  const params = [];
+  if (search) {
+    where += ' AND (u.email LIKE ? OR u.name LIKE ? OR sc.guest_token LIKE ? OR EXISTS (SELECT 1 FROM support_messages sm WHERE sm.conversation_id = sc.id AND sm.content LIKE ?))';
+    const like = `%${search}%`;
+    params.push(like, like, like, like);
+  }
+
+  const total = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM support_conversations sc
+    LEFT JOIN users u ON u.id = sc.user_id
+    ${where}
+  `).get(...params).count;
+
+  const rows = db.prepare(`
+    SELECT
+      sc.*,
+      u.email as user_email,
+      u.name as user_name,
+      (
+        SELECT content FROM support_messages
+        WHERE conversation_id = sc.id
+        ORDER BY id DESC LIMIT 1
+      ) as last_message,
+      (
+        SELECT created_at FROM support_messages
+        WHERE conversation_id = sc.id
+        ORDER BY id DESC LIMIT 1
+      ) as last_message_at,
+      (SELECT COUNT(*) FROM support_messages WHERE conversation_id = sc.id) as message_count
+    FROM support_conversations sc
+    LEFT JOIN users u ON u.id = sc.user_id
+    ${where}
+    ORDER BY sc.updated_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+
+  res.json({
+    conversations: rows.map(formatConversationRow),
+    total,
+    page,
+    limit,
+  });
+});
+
+app.get('/api/admin/support/conversations/:id', adminMiddleware, (req, res) => {
+  const conversation = db.prepare(`
+    SELECT sc.*, u.email as user_email, u.name as user_name
+    FROM support_conversations sc
+    LEFT JOIN users u ON u.id = sc.user_id
+    WHERE sc.id = ?
+  `).get(req.params.id);
+
+  if (!conversation) return res.status(404).json({ error: 'Диалог не найден' });
+
+  res.json({
+    conversation: formatConversationRow({
+      ...conversation,
+      message_count: db.prepare('SELECT COUNT(*) as count FROM support_messages WHERE conversation_id = ?').get(conversation.id).count,
+    }),
+    messages: getConversationMessages(db, conversation.id),
+  });
+});
+
+app.post('/api/admin/support/conversations/:id/messages', adminMiddleware, async (req, res) => {
+  const content = String(req.body?.content || '').trim();
+  if (!content) return res.status(400).json({ error: 'Введите сообщение' });
+  if (content.length > 4000) return res.status(400).json({ error: 'Сообщение слишком длинное' });
+
+  const conversation = db.prepare('SELECT * FROM support_conversations WHERE id = ?').get(req.params.id);
+  if (!conversation) return res.status(404).json({ error: 'Диалог не найден' });
+
+  db.prepare(`
+    INSERT INTO support_messages (conversation_id, role, content, admin_user_id)
+    VALUES (?, 'admin', ?, ?)
+  `).run(conversation.id, content, req.adminUserId);
+
+  db.prepare(`
+    UPDATE support_conversations
+    SET handoff_to_human = 1, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(conversation.id);
+
+  res.json({
+    messages: getConversationMessages(db, conversation.id),
+    handoff_to_human: true,
+  });
+});
+
+app.post('/api/admin/support/conversations/:id/resume-ai', adminMiddleware, (req, res) => {
+  const conversation = db.prepare('SELECT * FROM support_conversations WHERE id = ?').get(req.params.id);
+  if (!conversation) return res.status(404).json({ error: 'Диалог не найден' });
+
+  db.prepare(`
+    UPDATE support_conversations
+    SET handoff_to_human = 0, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(conversation.id);
+
+  res.json({ ok: true, handoff_to_human: false });
+});
+
+// ── JustRouter AI Agent API ──────────────────────────────
+
+app.post('/api/admin/agent/chat', adminMiddleware, async (req, res) => {
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: 'message обязателен' });
+
+  try {
+    let openClawContext = null;
+    let messageForAgent = message;
+    if (shouldAttachOpenClawContext(message)) {
+      openClawContext = buildOpenClawContext(db, { hours: 24, path: '', includeProject: true });
+      messageForAgent = buildOpenClawAgentMessage(message, openClawContext);
+    }
+    const result = await processAgentMessage({
+      userId: `web_admin_${req.user.id}`,
+      text: messageForAgent,
+      db,
+      apiKey: OPENROUTER_API_KEY,
+      dispatcher: openRouterDispatcher,
+    });
+    res.json(openClawContext ? {
+      ...result,
+      openclaw: {
+        context: openClawContext,
+        action_plan: buildOpenClawActionPlan(openClawContext),
+      },
+    } : result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/agent/openclaw/context', adminMiddleware, (req, res) => {
+  try {
+    const hours = Number(req.query.hours || 24);
+    const path = String(req.query.path || '');
+    const includeProject = String(req.query.include_project || 'false') === 'true';
+    const context = buildOpenClawContext(db, { hours, path, includeProject });
+    res.json({
+      context,
+      action_plan: buildOpenClawActionPlan(context),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/agent/openclaw/chat', adminMiddleware, async (req, res) => {
+  const { message, hours = 24, path = '' } = req.body || {};
+  if (!message) return res.status(400).json({ error: 'message обязателен' });
+
+  try {
+    const context = buildOpenClawContext(db, { hours, path, includeProject: true });
+    const result = await processAgentMessage({
+      userId: `openclaw_admin_${req.user.id}`,
+      text: buildOpenClawAgentMessage(message, context),
+      db,
+      apiKey: OPENROUTER_API_KEY,
+      dispatcher: openRouterDispatcher,
+      maxRounds: 18,
+    });
+    res.json({
+      ...result,
+      openclaw: {
+        context,
+        action_plan: buildOpenClawActionPlan(context),
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/agent/ceo-report', adminMiddleware, async (req, res) => {
+  try {
+    const result = await generateCeoReport({
+      db,
+      apiKey: OPENROUTER_API_KEY,
+      dispatcher: openRouterDispatcher,
+      sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg, { parse_mode: 'HTML' }),
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/agent/conversations', adminMiddleware, (req, res) => {
+  res.json(listActiveConversations());
+});
+
+app.post('/api/admin/agent/clear', adminMiddleware, (req, res) => {
+  const { userId } = req.body;
+  if (userId) {
+    clearConversation(userId);
+    res.json({ ok: true });
+  } else {
+    res.status(400).json({ error: 'userId обязателен' });
+  }
+});
+
+// ── SPA fallback ────────────────────────────────────────
+
+const distPath = join(__dirname, '..', 'dist');
+registerSpaRoutes(app, { distPath, renderSeoHtml });
+
+// Sync blog posts from DB into static cache (for SEO)
+try {
+  syncBlogPostsFromDb(db);
+  logger.info('blog posts synced from database');
+} catch (e) {
+  logger.warn('blog sync failed', { error: e.message });
+}
+
+app.listen(PORT, async () => {
+  logger.info('server started', { url: `http://localhost:${PORT}`, api: `http://localhost:${PORT}/api` });
+
+  try {
+    await ensureTelegramWebhook();
+  } catch (e) {
+    console.error('[telegram] ensureTelegramWebhook failed', e);
+  }
+
+  try {
+    await ensureAdminAccount();
+  } catch (e) {
+    console.error('[admin] ensureAdminAccount failed', e);
+  }
+
+  try {
+    backfillReferralCodes(db);
+  } catch (e) {
+    console.error('[referrals] backfill failed', e.message);
+  }
 
   if (OPENROUTER_API_KEY) {
+    const untranslated = countModelsNeedingRussianTranslation(db);
+    const modelCount = db.prepare('SELECT COUNT(*) as count FROM models WHERE is_active = 1').get().count;
+    if (untranslated > 0) {
+      console.log(`[openrouter] ${untranslated} models need Russian descriptions`);
+    }
+    if (modelCount >= 50 && untranslated === 0) {
+      console.log(`[openrouter] skip startup sync (${modelCount} active models)`);
+      fetchOpenRouterVideoMeta({ apiKey: OPENROUTER_API_KEY, proxyUrl: OPENROUTER_PROXY_URL })
+        .then((meta) => console.log(`[openrouter] cached video meta for ${Object.keys(meta).length} models`))
+        .catch((e) => console.error('[openrouter] video meta cache failed', e.message));
+    } else {
+      const delayMs = modelCount === 0 ? 0 : 15000;
+      if (modelCount === 0) {
+        console.log('[openrouter] catalog empty, syncing models immediately');
+      }
+      setTimeout(() => {
     syncOpenRouterModels({
       db,
       apiKey: OPENROUTER_API_KEY,
       proxyUrl: OPENROUTER_PROXY_URL,
+          forceRetranslate: untranslated > 0,
     })
       .then((count) => console.log(`[openrouter] synced ${count} models`))
       .catch((e) => console.error('[openrouter] model sync failed', e));
+      }, delayMs);
+    }
   }
+
+  // ── JustRouter AI CEO Agent: report every 12 hours ──
+  if (JUSTROUTER_AGENT_ENABLED && JUSTROUTER_CEO_CHAT_ID && OPENROUTER_API_KEY) {
+    const CEO_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+    async function runCeoReport() {
+      console.log('[ceo-agent] generating scheduled report...');
+      try {
+        const result = await generateCeoReport({
+          db,
+          apiKey: OPENROUTER_API_KEY,
+          dispatcher: openRouterDispatcher,
+          sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { parse_mode: 'HTML' }),
+          ceoChatId: JUSTROUTER_CEO_CHAT_ID,
+        });
+        console.log(`[ceo-agent] report generated: ${result.ok ? 'OK' : 'ERROR'}`);
+      } catch (e) {
+        console.error('[ceo-agent] report error:', e.message);
+      }
+    }
+
+    // Run first report after 1 minute delay (server startup)
+    setTimeout(() => {
+      runCeoReport();
+      // Then every 12 hours
+      setInterval(runCeoReport, CEO_INTERVAL_MS);
+      console.log(`[ceo-agent] scheduled every 12 hours, first report in 1 minute`);
+    }, 60_000);
+  } else {
+    console.log('[ceo-agent] disabled (set JUSTROUTER_AGENT_ENABLED=true, JUSTROUTER_CEO_CHAT_ID, and OPENROUTER_API_KEY)');
+  }
+});
+
+// ── Periodic cleanup of expired verification codes ──
+function cleanExpiredVerificationCodes() {
+  try {
+    const result = db.prepare("DELETE FROM email_verification_codes WHERE expires_at < datetime('now')").run();
+    if (result.changes > 0) {
+      console.log(`[cleanup] deleted ${result.changes} expired verification codes`);
+    }
+  } catch (e) {
+    console.error('[cleanup] verification codes error', e.message);
+  }
+}
+// Run every hour
+setInterval(cleanExpiredVerificationCodes, 60 * 60 * 1000);
+// Run once at startup
+setTimeout(cleanExpiredVerificationCodes, 10_000);
+
+function shutdown(signal) {
+  console.log(`[server] ${signal} received, shutting down`);
+  checkpointDatabase('TRUNCATE');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Global error handlers
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[server] UNHANDLED REJECTION:', reason instanceof Error ? reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[server] UNCAUGHT EXCEPTION:', err.message);
+  console.error(err.stack);
+  checkpointDatabase('TRUNCATE');
+  process.exit(1);
 });

@@ -7,7 +7,17 @@
     "dev": "vite",
     "dev:server": "node server/index.js",
     "dev:all": "node server/index.js & vite",
-    "build": "vite build",
+    "build": "node scripts/build-demos.mjs && vite build && node scripts/generate-og-image.mjs",
+    "migrate:db": "node scripts/migrate-db.mjs",
+    "test:billing": "node scripts/test-billing.mjs",
+    "test:agent-safety": "node scripts/test-agent-safety.mjs",
+    "test:agent-project": "node scripts/test-agent-project-tools.mjs",
+    "test:openclaw-agent": "node scripts/test-openclaw-agent.mjs",
+    "test:openclaw-obsidian": "node scripts/test-openclaw-obsidian-memory.mjs",
+    "test": "npm run test:billing && npm run test:agent-safety && npm run test:agent-project && npm run test:openclaw-agent && npm run test:openclaw-obsidian",
+    "openclaw:report-worker": "node scripts/openclaw-report-worker.mjs",
+    "openclaw:report-now": "node scripts/openclaw-report-now.mjs",
+    "openclaw:obsidian": "node scripts/openclaw-obsidian-cli.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node server/index.js"
@@ -35,6 +45,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
+    "sharp": "^0.34.2",
     "tailwindcss": "^4.3.0",
     "vite": "^8.0.12"
   }
