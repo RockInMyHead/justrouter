@@ -1657,10 +1657,11 @@ function ModelCard({ model, onSelect, onApiKey, active = false }) {
           )}
           <button
             onClick={(e) => { e.stopPropagation(); onApiKey(model); }}
-            className="text-white/20 hover:text-white/60 transition-colors"
-            title="API ключ"
+            className="text-[10px] font-mono px-2.5 py-1 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/[0.04] transition-all"
+            style={{ border: '1px solid rgba(255,255,255,0.06)' }}
+            title="Инструкция по API"
           >
-            <Key size={14} />
+            API
           </button>
         </div>
       </div>
@@ -1707,24 +1708,133 @@ function ModelCard({ model, onSelect, onApiKey, active = false }) {
 }
 
 function ApiKeyModal({ model, onClose }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState('');
   const navigate = useNavigate();
   const session = JSON.parse(localStorage.getItem('velorix_session') || 'null');
   const apiKey = session?.api_key || '';
-  const curlExample = `curl https://justrouter.ru/api/v1/chat \\
-  -H "X-Api-Key: ${apiKey ? `${apiKey.slice(0, 16)}...` : 'jr_<ваш_ключ>'}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model_id": "${model.id}", "content": "Привет"}'`;
 
-  const handleCopy = () => {
-    if (!apiKey) {
-      navigate('/');
+  const toolType = getModelToolType(model);
+
+  const examples = {
+    chat: {
+      label: 'Чат / Текст',
+      code: `curl https://justrouter.ru/api/v1/chat \\
+  -H "X-Api-Key: ${apiKey || 'jr_<ваш_ключ>'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model_id": "${model.id}",
+    "content": "Привет! Расскажи о себе"
+  }'`,
+    },
+    tts: {
+      label: 'Озвучка текста',
+      code: `curl https://justrouter.ru/api/audio \\
+  -H "X-Api-Key: ${apiKey || 'jr_<ваш_ключ>'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model_id": "${model.id}",
+    "prompt": "Привет! Это тестовое аудио.",
+    "voice": "alloy"
+  }'`,
+    },
+    stt: {
+      label: 'Распознавание речи',
+      code: `curl https://justrouter.ru/api/v1/chat \\
+  -H "X-Api-Key: ${apiKey || 'jr_<ваш_ключ>'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model_id": "${model.id}",
+    "content": "Привет, как дела?"
+  }'`,
+    },
+    image: {
+      label: 'Генерация изображения',
+      code: `curl https://justrouter.ru/api/image \\
+  -H "X-Api-Key: ${apiKey || 'jr_<ваш_ключ>'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model_id": "${model.id}",
+    "prompt": "красивый закат над горами, цифровой арт"
+  }'`,
+    },
+    video: {
+      label: 'Генерация видео',
+      code: `curl https://justrouter.ru/api/video \\
+  -H "X-Api-Key: ${apiKey || 'jr_<ваш_ключ>'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model_id": "${model.id}",
+    "prompt": "Космический корабль пролетает над поверхностью Марса"
+  }'`,
+    },
+    embedding: {
+      label: 'Embedding',
+      code: `curl https://justrouter.ru/api/v1/chat \\
+  -H "X-Api-Key: ${apiKey || 'jr_<ваш_ключ>'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model_id": "${model.id}",
+    "content": "Текст для эмбеддинга"
+  }'`,
+    },
+  };
+
+  const currentExample = examples[toolType] || examples.chat;
+
+  const jsCode = `const response = await fetch('https://justrouter.ru/api/v1/chat', {
+  method: 'POST',
+  headers: {
+    'X-Api-Key': '${apiKey || 'jr_<ваш_ключ>'}',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    model_id: '${model.id}',
+    content: 'Привет!',
+  }),
+});
+const data = await response.json();
+console.log(data.response);`;
+
+  const pyApiPath = toolType === 'tts' ? '/api/audio' : toolType === 'image' ? '/api/image' : toolType === 'video' ? '/api/video' : '/api/v1/chat';
+  const pyBodyStr = toolType === 'tts'
+    ? "    'model_id': '" + model.id + "',\n    'prompt': 'Ваш запрос',\n    'voice': 'alloy',"
+    : (toolType === 'image' || toolType === 'video')
+    ? "    'model_id': '" + model.id + "',\n    'prompt': 'Ваш запрос',"
+    : "    'model_id': '" + model.id + "',\n    'content': 'Ваш запрос',";
+  const pyCode = `import requests
+
+response = requests.post(
+    'https://justrouter.ru${pyApiPath}',
+    headers={
+        'X-Api-Key': '${apiKey || 'jr_<ваш_ключ>'}',
+        'Content-Type': 'application/json',
+    },
+    json={
+${pyBodyStr}
+    }
+)
+print(response.json())`;
+
+  const handleCopy = (text, label) => {
+    if (text === 'key') {
+      if (!apiKey) { navigate('/'); return; }
+      navigator.clipboard.writeText(apiKey).then(() => {
+        setCopied('key');
+        setTimeout(() => setCopied(''), 2000);
+      }).catch(() => {});
       return;
     }
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(label);
+      setTimeout(() => setCopied(''), 2000);
+    }).catch(() => {});
+  };
 
+  const handleCopyFullKey = () => {
+    if (!apiKey) { navigate('/'); return; }
     navigator.clipboard.writeText(apiKey).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopied('key');
+      setTimeout(() => setCopied(''), 2000);
     }).catch(() => {});
   };
 
@@ -1738,49 +1848,167 @@ function ApiKeyModal({ model, onClose }) {
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-2xl p-6 sm:p-8"
+        className="w-full max-w-2xl rounded-2xl max-h-[90vh] overflow-y-auto"
         style={{
           backgroundColor: '#0a0a0a',
           border: '1px solid rgba(255,255,255,0.08)',
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-white text-lg font-semibold">API ключ</h2>
-          <button onClick={onClose} className="text-white/30 hover:text-white/60 transition-colors p-1">
+        {/* Header */}
+        <div className="flex items-center justify-between p-6 pb-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="size-10 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: `${model.color}15` }}>
+              <Key size={16} style={{ color: model.color }} />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-white text-base font-semibold truncate">{model.name}</h2>
+              <p className="text-white/30 text-xs font-mono truncate">{model.id}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-white/30 hover:text-white/60 transition-colors p-1 shrink-0 cursor-pointer">
             <XIcon size={18} />
           </button>
         </div>
 
-        <p className="text-sm mb-4" style={{ color: 'rgba(255,255,255,0.5)' }}>
-          Ваш API-ключ для модели <strong className="text-white">{model.name}</strong>. Используйте его в заголовке <code className="text-white/70">X-Api-Key</code>.
-        </p>
+        {/* API Key */}
+        <div className="p-6 space-y-5">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-white/60 text-xs font-mono uppercase tracking-wider">API ключ</h3>
+              {apiKey && (
+                <button onClick={handleCopyFullKey}
+                  className={'text-xs font-mono px-3 py-1 rounded-lg transition-all cursor-pointer ' + (copied === 'key' ? 'text-green-400 bg-green-500/10' : 'text-white/40 hover:text-white/70 bg-white/[0.03]')}
+                  style={{ border: '1px solid ' + (copied === 'key' ? 'rgba(74,222,128,0.2)' : 'rgba(255,255,255,0.06)') }}>
+                  {copied === 'key' ? 'Скопировано!' : 'Копировать ключ'}
+                </button>
+              )}
+            </div>
+            <div className="rounded-xl p-4 font-mono text-xs break-all select-all text-white/80"
+              style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              {apiKey || <span className="text-white/30">Войдите или зарегистрируйтесь, чтобы получить API-ключ</span>}
+            </div>
+          </div>
 
-        <div
-          className="rounded-xl p-4 mb-4 font-mono text-xs break-all select-all"
-          style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
-        >
-          {apiKey || 'Войдите или зарегистрируйтесь, чтобы получить API-ключ'}
+          {/* Usage instruction */}
+          <div>
+            <h3 className="text-white/60 text-xs font-mono uppercase tracking-wider mb-2">Использование</h3>
+            <p className="text-white/40 text-xs mb-3 leading-relaxed">
+              Отправляйте POST-запросы на API endpoint с вашим ключом в заголовке <code className="text-white/70">X-Api-Key</code>.
+              {!apiKey && <span className="text-yellow-400/60"> Войдите в аккаунт, чтобы получить персональный ключ.</span>}
+            </p>
+
+            {/* Endpoint info */}
+            <div className="flex flex-wrap gap-2 mb-3">
+              {(() => {
+                const endpoints = {
+                  chat: '/api/v1/chat — текст',
+                  tts: '/api/audio — аудио',
+                  stt: '/api/v1/chat — текст',
+                  image: '/api/image — изображения',
+                  video: '/api/video — видео',
+                  embedding: '/api/v1/chat — эмбеддинги',
+                };
+                return Object.entries(endpoints).map(([key, label]) => (
+                  <span key={key}
+                    className={'text-[10px] font-mono px-2 py-1 rounded-md ' + (key === toolType ? 'text-white/70' : 'text-white/20')}
+                    style={{ backgroundColor: key === toolType ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
+                    {label}
+                  </span>
+                ));
+              })()}
+            </div>
+
+            {/* Curl example */}
+            <div className="rounded-xl overflow-hidden" style={{ backgroundColor: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div className="flex items-center justify-between px-4 py-2.5" style={{ backgroundColor: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <span className="text-white/40 text-xs font-mono">{currentExample.label}</span>
+                <button onClick={() => handleCopy(currentExample.code, 'curl')}
+                  className={'text-xs font-mono px-3 py-1 rounded-lg transition-all cursor-pointer ' + (copied === 'curl' ? 'text-green-400 bg-green-500/10' : 'text-white/40 hover:text-white/70 bg-white/[0.03]')}>
+                  {copied === 'curl' ? 'Скопировано!' : 'Копировать'}
+                </button>
+              </div>
+              <pre className="p-4 text-xs font-mono text-white/70 leading-relaxed overflow-x-auto whitespace-pre-wrap" style={{ color: 'rgba(255,255,255,0.65)' }}>
+                {currentExample.code}
+              </pre>
+            </div>
+          </div>
+
+          {/* JavaScript example */}
+          {toolType === 'chat' && (
+            <div>
+              <h3 className="text-white/60 text-xs font-mono uppercase tracking-wider mb-2">JavaScript (fetch)</h3>
+              <div className="rounded-xl overflow-hidden" style={{ backgroundColor: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <div className="flex items-center justify-between px-4 py-2.5" style={{ backgroundColor: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <span className="text-white/40 text-xs font-mono">JavaScript</span>
+                  <button onClick={() => handleCopy(jsCode, 'js')}
+                    className={'text-xs font-mono px-3 py-1 rounded-lg transition-all cursor-pointer ' + (copied === 'js' ? 'text-green-400 bg-green-500/10' : 'text-white/40 hover:text-white/70 bg-white/[0.03]')}>
+                    {copied === 'js' ? 'Скопировано!' : 'Копировать'}
+                  </button>
+                </div>
+                <pre className="p-4 text-xs font-mono text-white/70 leading-relaxed overflow-x-auto whitespace-pre-wrap" style={{ color: 'rgba(255,255,255,0.65)' }}>
+{`const response = await fetch('https://justrouter.ru/api/v1/chat', {
+  method: 'POST',
+  headers: {
+    'X-Api-Key': '${apiKey || 'jr_<ваш_ключ>'}',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    model_id: '${model.id}',
+    content: 'Привет!',
+  }),
+});
+const data = await response.json();
+console.log(data.response);`}
+                </pre>
+              </div>
+            </div>
+          )}
+
+          {/* Python example */}
+          <div>
+            <h3 className="text-white/60 text-xs font-mono uppercase tracking-wider mb-2">Python</h3>
+            <div className="rounded-xl overflow-hidden" style={{ backgroundColor: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div className="flex items-center justify-between px-4 py-2.5" style={{ backgroundColor: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <span className="text-white/40 text-xs font-mono">Python</span>
+                <button onClick={() => handleCopy(pyCode, 'py')}
+                  className={'text-xs font-mono px-3 py-1 rounded-lg transition-all cursor-pointer ' + (copied === 'py' ? 'text-green-400 bg-green-500/10' : 'text-white/40 hover:text-white/70 bg-white/[0.03]')}>
+                  {copied === 'py' ? 'Скопировано!' : 'Копировать'}
+                </button>
+              </div>
+              <pre className="p-4 text-xs font-mono text-white/70 leading-relaxed overflow-x-auto whitespace-pre-wrap" style={{ color: 'rgba(255,255,255,0.65)' }}>
+{`import requests
+
+response = requests.post(
+    'https://justrouter.ru${toolType === 'tts' ? '/api/audio' : toolType === 'image' ? '/api/image' : toolType === 'video' ? '/api/video' : '/api/v1/chat'}',
+    headers={
+        'X-Api-Key': '${apiKey || 'jr_<ваш_ключ>'}',
+        'Content-Type': 'application/json',
+    },
+    json={
+        'model_id': '${model.id}',${toolType === 'tts' || toolType === 'image' || toolType === 'video' ? "\n        'prompt': 'Ваш запрос'," : "\n        'content': 'Ваш запрос',"}${toolType === 'tts' ? "\n        'voice': 'alloy'," : ''}
+    }
+)
+print(response.json())`}
+              </pre>
+            </div>
+          </div>
+
+          {/* Model info */}
+          <div className="flex flex-wrap gap-3 pt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+            <div className="text-white/30 text-[10px] font-mono">
+              <span className="text-white/50">Провайдер:</span> {model.provider}
+            </div>
+            <div className="text-white/30 text-[10px] font-mono">
+              <span className="text-white/50">Цена:</span> {formatModelPrice(model)}
+            </div>
+            {model.context > 0 && (
+              <div className="text-white/30 text-[10px] font-mono">
+                <span className="text-white/50">Контекст:</span> {formatContext(model.context)}
+              </div>
+            )}
+          </div>
         </div>
-
-        <div className="text-xs mb-5" style={{ color: 'rgba(255,255,255,0.35)' }}>
-          Пример запроса:
-          <br />
-          <code style={{ color: 'rgba(255,255,255,0.5)', whiteSpace: 'pre-wrap' }}>
-            {curlExample}
-          </code>
-        </div>
-
-        <button
-          onClick={handleCopy}
-          className="w-full py-3 rounded-xl text-sm font-medium transition-all duration-200"
-          style={{
-            backgroundColor: copied ? '#10B981' : '#ffffff',
-            color: copied ? '#fff' : '#000',
-          }}
-        >
-          {copied ? 'Скопировано!' : (apiKey ? 'Копировать ключ' : 'Войти и получить ключ')}
-        </button>
       </div>
     </div>
   );
