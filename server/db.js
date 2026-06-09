@@ -276,6 +276,31 @@ try { db.exec('ALTER TABLE users ADD COLUMN subscription_end_date TEXT'); } catc
 // Add video_meta column to models table
 try { db.exec('ALTER TABLE models ADD COLUMN video_meta TEXT'); } catch { /* exists */ }
 
+// ── Analytics events table (click heatmaps, scroll depth, rage clicks) ──
+db.exec(`
+  CREATE TABLE IF NOT EXISTS analytics_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    visitor_id TEXT,
+    session_id TEXT,
+    user_id INTEGER,
+    event_type TEXT NOT NULL,
+    path TEXT,
+    referrer TEXT,
+    element TEXT,
+    text TEXT,
+    x REAL,
+    y REAL,
+    scroll_y REAL,
+    viewport_w REAL,
+    viewport_h REAL,
+    metadata TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at)'); } catch { /* exists */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_type ON analytics_events(event_type)'); } catch { /* exists */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_path ON analytics_events(path)'); } catch { /* exists */ }
+
 // Add banned column for user blocking
 try { db.exec('ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0'); } catch { /* exists */ }
 

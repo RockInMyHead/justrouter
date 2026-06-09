@@ -1885,6 +1885,276 @@ function PromoCodesTab() {
   );
 }
 
+var quickPaths = ['/', '/models', '/pricing', '/blog', '/demo'];
+
+function HeatmapTab() {
+  var [tab, setTab] = useState('overview');
+  var [summary, setSummary] = useState(null);
+  var [clickPts, setClickPts] = useState([]);
+  var [mousePts, setMousePts] = useState([]);
+  var [scrollBuckets, setScrollBuckets] = useState([]);
+  var [rageItems, setRageItems] = useState([]);
+  var [sessionData, setSessionData] = useState(null);
+  var [loading, setLoading] = useState(true);
+  var [selPath, setSelPath] = useState('/');
+  var [htType, setHtType] = useState('click');
+  var canvasRef = useRef(null);
+  var wrapRef = useRef(null);
+
+  var PAGE_SECTIONS = {
+    '/': [
+      { name: 'Hero / Первый экран', yStart: 0, yEnd: 750, color: 'rgba(59,130,246,0.2)' },
+      { name: 'Возможности', yStart: 750, yEnd: 1400, color: 'rgba(16,185,129,0.2)' },
+      { name: 'Модели (Showcase)', yStart: 1400, yEnd: 2100, color: 'rgba(251,191,36,0.2)' },
+      { name: 'Тарифы (Pricing)', yStart: 2100, yEnd: 3600, color: 'rgba(236,72,153,0.2)' },
+      { name: 'FAQ', yStart: 3600, yEnd: 4200, color: 'rgba(249,115,22,0.2)' },
+      { name: 'Подвал', yStart: 4200, yEnd: 4600, color: 'rgba(107,114,128,0.2)' },
+    ],
+    '/models': [
+      { name: 'Шапка', yStart: 0, yEnd: 80, color: 'rgba(99,102,241,0.25)' },
+      { name: 'Поиск / Категории', yStart: 80, yEnd: 180, color: 'rgba(59,130,246,0.2)' },
+      { name: 'Сетка моделей', yStart: 180, yEnd: 2500, color: 'rgba(16,185,129,0.2)' },
+      { name: 'Подвал', yStart: 2500, yEnd: 2800, color: 'rgba(107,114,128,0.2)' },
+    ],
+    '/pricing': [
+      { name: 'Шапка', yStart: 0, yEnd: 80, color: 'rgba(99,102,241,0.25)' },
+      { name: 'Тарифы', yStart: 80, yEnd: 900, color: 'rgba(236,72,153,0.2)' },
+      { name: 'FAQ / Детали', yStart: 900, yEnd: 1500, color: 'rgba(249,115,22,0.2)' },
+      { name: 'Подвал', yStart: 1500, yEnd: 1800, color: 'rgba(107,114,128,0.2)' },
+    ],
+    '/blog': [
+      { name: 'Шапка', yStart: 0, yEnd: 80, color: 'rgba(99,102,241,0.25)' },
+      { name: 'Список статей', yStart: 80, yEnd: 2000, color: 'rgba(16,185,129,0.2)' },
+      { name: 'Подвал', yStart: 2000, yEnd: 2300, color: 'rgba(107,114,128,0.2)' },
+    ],
+  };
+
+  function loadAll() {
+    if (!getToken()) return;
+    setLoading(true);
+    var token = getToken();
+    var h = 24;
+
+    adminFetch('/api/admin/analytics/summary?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setSummary(d); }).catch(function() {});
+
+    adminFetch('/api/admin/analytics/sessions?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setSessionData(d); }).catch(function() {});
+
+    adminFetch('/api/admin/analytics/scroll-depth?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setScrollBuckets(d.buckets || []); }).catch(function() {});
+
+    adminFetch('/api/admin/analytics/rage-clicks?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setRageItems(d.items || []); }).catch(function() {});
+
+    loadHeatmap(token, '/', true);
+    setLoading(false);
+  }
+
+  function loadHeatmap(token, path) {
+    var enc = encodeURIComponent(path || selPath);
+    var p = path || selPath;
+    var h = 24;
+    adminFetch('/api/admin/analytics/heatmap-click?hours=' + h + '&path=' + enc + '&grid_size=24', { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setClickPts(d.points || []); }).catch(function() {});
+    adminFetch('/api/admin/analytics/heatmap-mouse?hours=' + h + '&path=' + enc + '&grid_size=32', { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setMousePts(d.points || []); }).catch(function() {});
+  }
+
+  useEffect(function() { loadAll(); }, []);
+
+  function getSections(p) { return PAGE_SECTIONS[p] || PAGE_SECTIONS[(p || '').replace(/\/$/, '')] || null; }
+
+  function draw() {
+    if (!canvasRef.current || !wrapRef.current) return;
+    var points = htType === 'mouse' ? mousePts : clickPts;
+    var canvas = canvasRef.current;
+    var wrap = wrapRef.current;
+    var w = wrap.clientWidth || 800;
+    var maxY = (!points || points.length === 0) ? 2000 : Math.max.apply(null, points.map(function(p) { return p.y; })) + 400;
+    maxY = Math.max(maxY, 1200);
+    var h = Math.max(300, Math.min(700, maxY * (w / 1920)));
+    canvas.width = w; canvas.height = h;
+    var ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0a0a0f'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    var scaleY = canvas.height / maxY;
+    var scaleX = canvas.width / 1920;
+
+    var sections = getSections(selPath);
+    if (sections) {
+      for (var si = 0; si < sections.length; si++) {
+        var sec = sections[si];
+        ctx.fillStyle = sec.color;
+        ctx.fillRect(0, Math.round(sec.yStart * scaleY), canvas.width, Math.round((sec.yEnd - sec.yStart) * scaleY));
+        ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '9px monospace'; ctx.textAlign = 'left';
+        ctx.fillText(sec.name, 4, Math.round(sec.yStart * scaleY) + 12);
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, Math.round(sec.yStart * scaleY)); ctx.lineTo(canvas.width, Math.round(sec.yStart * scaleY)); ctx.stroke();
+      }
+    }
+
+    if (!points || points.length === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '14px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('Нет данных для отображения', canvas.width / 2, canvas.height / 2); return;
+    }
+
+    var maxCount = Math.max.apply(null, points.map(function(p) { return p.count; }));
+    if (maxCount === 0) return;
+    for (var j = 0; j < points.length; j++) {
+      var p = points[j];
+      if (p.x == null || p.y == null) continue;
+      var intensity = p.count / maxCount;
+      var radius = Math.max(3, intensity * 16);
+      var cx = p.x * scaleX, cy = p.y * scaleY;
+      var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius * 3);
+      if (htType === 'mouse') {
+        grad.addColorStop(0, 'rgba(59, 130, 246, ' + (0.5 * intensity) + ')');
+        grad.addColorStop(0.5, 'rgba(59, 130, 246, ' + (0.15 * intensity) + ')');
+      } else {
+        grad.addColorStop(0, 'rgba(251, 191, 36, ' + (0.6 * intensity) + ')');
+        grad.addColorStop(0.5, 'rgba(251, 146, 60, ' + (0.2 * intensity) + ')');
+      }
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.beginPath(); ctx.arc(cx, cy, radius * 3, 0, Math.PI * 2); ctx.fillStyle = grad; ctx.fill();
+    }
+
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '10px monospace'; ctx.textAlign = 'left';
+    ctx.fillText('Точек: ' + points.length + ' | Макс: ' + maxCount + ' | ' + selPath, 8, 14);
+  }
+
+  useEffect(function() { if (!loading) draw(); }, [clickPts, mousePts, selPath, htType, loading]);
+
+  var subs = [{ id: 'overview', label: 'Обзор' }, { id: 'heatmap', label: 'Тепловая карта' }, { id: 'scroll', label: 'Глубина скролла' }, { id: 'rage', label: 'Rage клики' }];
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-white font-semibold text-lg">Трекинг посетителей</h2>
+        <button onClick={loadAll} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer"><RefreshCw size={12} /> Обновить</button>
+      </div>
+
+      {summary && <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <StatCard icon={Users} label="Посетители" value={formatNumber(summary.unique_visitors)} sub="за 24ч" color="bg-blue-500/20 text-blue-300" />
+        <StatCard icon={Activity} label="События" value={formatNumber(summary.total_events)} sub="всего" color="bg-emerald-500/20 text-emerald-300" />
+        <StatCard icon={Clock} label="Сессии" value={sessionData ? formatNumber(sessionData.total_sessions) : '...'} sub={sessionData ? sessionData.avg_pages_per_session + ' стр/сесс' : ''} color="bg-violet-500/20 text-violet-300" />
+        <StatCard icon={ScrollText} label="Скролл" value={(scrollBuckets.slice(-1)[0]?.bucket || 0) + '%'} sub={'последний бакет'} color="bg-amber-500/20 text-amber-300" />
+        <StatCard icon={Zap} label="Rage клики" value={formatNumber(rageItems.reduce(function(s, r) { return s + r.count; }, 0))} sub="за 24ч" color="bg-red-500/20 text-red-300" />
+      </div>}
+
+      <div className="flex flex-wrap gap-2 border-b border-white/10 pb-3">
+        {subs.map(function(t) { return (
+          <button key={t.id} onClick={function() { setTab(t.id); }}
+            className={'px-4 py-2 rounded-xl text-xs font-mono transition-colors ' + (tab === t.id ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/30' : 'text-white/50 border border-white/10 bg-white/[0.03] hover:bg-white/[0.06]')}>
+            {t.label}
+          </button>
+        );})}
+      </div>
+
+      {tab === 'overview' && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur-sm">
+            <h3 className="text-white/70 text-sm font-medium mb-4">Топ страниц</h3>
+            <div className="space-y-2">
+              {(summary?.top_pages || []).length === 0 ? <div className="text-white/20 text-xs font-mono py-8 text-center">Нет данных</div>
+                : (summary?.top_pages || []).map(function(row) { return (
+                  <div key={row.path} className="flex items-center justify-between py-2 border-b border-white/[0.02] text-xs font-mono">
+                    <span className="text-white/70 truncate">{row.path}</span>
+                    <span className="text-white/40 shrink-0 ml-3">{row.count}</span>
+                  </div>
+                );})}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur-sm">
+            <h3 className="text-white/70 text-sm font-medium mb-4">Типы событий</h3>
+            <div className="space-y-2">
+              {(summary?.event_types || []).length === 0 ? <div className="text-white/20 text-xs font-mono py-8 text-center">Нет данных</div>
+                : (summary?.event_types || []).map(function(row) { return (
+                  <div key={row.type} className="flex items-center justify-between py-2 border-b border-white/[0.02] text-xs font-mono">
+                    <span className="text-white/70">{row.type}</span>
+                    <span className="text-white/40">{row.count}</span>
+                  </div>
+                );})}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'heatmap' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <select value={selPath} onChange={function(e) { setSelPath(e.target.value); loadHeatmap(getToken(), e.target.value); }}
+              className="bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2 text-white text-xs font-mono outline-none cursor-pointer">
+              {quickPaths.concat(['/account', '/faq', '/docs']).map(function(p) { return <option key={p} value={p}>{p}</option>; })}
+            </select>
+            <div className="flex gap-1 bg-white/[0.03] rounded-xl p-1 border border-white/10">
+              {[{ id: 'click', label: 'Клики' }, { id: 'mouse', label: 'Мышь' }].map(function(t) { return (
+                <button key={t.id} onClick={function() { setHtType(t.id); }}
+                  className={'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer ' + (htType === t.id ? 'bg-cyan-400/20 text-cyan-300' : 'text-white/40 hover:text-white/70')}>
+                  {t.label}
+                </button>
+              );})}
+            </div>
+          </div>
+          <div ref={wrapRef} className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden backdrop-blur-sm">
+            <canvas ref={canvasRef} className="w-full" />
+          </div>
+        </div>
+      )}
+
+      {tab === 'scroll' && (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur-sm">
+          <h3 className="text-white/70 text-sm font-medium mb-4">Глубина скролла (за 24ч)</h3>
+          {scrollBuckets.length === 0 ? <div className="text-white/20 text-xs font-mono py-8 text-center">Нет данных</div>
+            : <div className="space-y-2">
+                {scrollBuckets.map(function(b) {
+                  var maxB = Math.max.apply(null, scrollBuckets.map(function(x) { return x.count; }));
+                  var pct = maxB > 0 ? Math.round((b.count / maxB) * 100) : 0;
+                  return (
+                    <div key={b.bucket} className="flex items-center gap-3 text-xs font-mono">
+                      <span className="w-10 text-right text-white/50">{b.bucket}%</span>
+                      <div className="flex-1 h-4 rounded bg-white/5 overflow-hidden">
+                        <div className="h-full rounded bg-cyan-500/50 transition-all" style={{ width: pct + '%' }} />
+                      </div>
+                      <span className="w-12 text-right text-white/40">{b.count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+          }
+        </div>
+      )}
+
+      {tab === 'rage' && (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur-sm">
+          <h3 className="text-white/70 text-sm font-medium mb-4">Rage клики (за 24ч)</h3>
+          {rageItems.length === 0 ? <div className="text-white/20 text-xs font-mono py-8 text-center">Нет rage-кликов</div>
+            : <div className="overflow-x-auto">
+                <table className="w-full text-xs font-mono">
+                  <thead><tr className="text-white/30 border-b border-white/10">
+                    <th className="text-left py-2 pr-3">Элемент</th>
+                    <th className="text-left py-2 pr-3">Текст</th>
+                    <th className="text-left py-2 pr-3">Страница</th>
+                    <th className="text-right py-2 pr-3">Кол-во</th>
+                    <th className="text-right py-2">Последний</th>
+                  </tr></thead>
+                  <tbody>{rageItems.map(function(item) { return (
+                    <tr key={item.element + item.path + item.text} className="border-b border-white/[0.02] text-white/70">
+                      <td className="py-2.5 pr-3 text-white/50">{item.element || '—'}</td>
+                      <td className="py-2.5 pr-3 truncate max-w-[200px]">{item.text || '—'}</td>
+                      <td className="py-2.5 pr-3 text-white/50">{item.path}</td>
+                      <td className="py-2.5 pr-3 text-right text-red-300">{item.count}</td>
+                      <td className="py-2.5 text-right text-white/40">{item.last_seen ? item.last_seen.slice(0, 16) : '—'}</td>
+                    </tr>
+                  );})}</tbody>
+                </table>
+              </div>
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UsersDashboardTab() {
   var [data, setData] = useState(null);
   var [days, setDays] = useState(14);
@@ -2513,6 +2783,7 @@ var ADMIN_TABS = [
   { id: 'corporate', label: 'Корп. клиенты', icon: Building2 },
   { id: 'referrals', label: 'Промокоды', icon: Gift },
   { id: 'promo-codes', label: 'Коды', icon: Key },
+  { id: 'heatmap', label: 'Трекинг', icon: Activity },
   { id: 'users-dashboard', label: 'Дашборд юзеров', icon: Activity },
   { id: 'support', label: 'Поддержка', icon: MessageSquare },
   { id: 'blog', label: 'Блог', icon: FileText },
@@ -2556,6 +2827,7 @@ function AdminDashboard({ onLogout }) {
         {tab === 'corporate' && <CorporateTab />}
         {tab === 'referrals' && <ReferralsTab />}
         {tab === 'promo-codes' && <PromoCodesTab />}
+        {tab === 'heatmap' && <HeatmapTab />}
         {tab === 'users-dashboard' && <UsersDashboardTab />}
         {tab === 'support' && <SupportTab />}
         {tab === 'blog' && <BlogTab />}

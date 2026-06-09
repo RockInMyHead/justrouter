@@ -49,6 +49,16 @@ import {
   PRICE_MULTIPLIER,
 } from './billing.js';
 import {
+  recordAnalyticsEvent,
+  getAnalyticsSummary,
+  getHeatmapClickData,
+  getHeatmapMouseData,
+  getScrollDepthData,
+  getRageClickData,
+  getSessionAnalytics,
+  recordFunnelEvent,
+} from './analytics.js';
+import {
   getOrCreateConversation,
   getConversationMessages,
   generateSupportAssistantReply,
@@ -3112,6 +3122,7 @@ function deleteAllUserData(dbConn, userId) {
   }
   dbConn.prepare('DELETE FROM support_conversations WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM analytics_events WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM site_purchases WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM video_jobs WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM yookassa_payments WHERE user_id = ?').run(userId);
@@ -3195,6 +3206,58 @@ app.post('/api/admin/telegram/broadcast', adminMiddleware, async (req, res) => {
   }
 
   res.json({ sent, total: links.length });
+});
+
+// ── Analytics ingest for click heatmaps, scroll depth, rage clicks ──
+app.post('/api/analytics/events', publicWriteRateLimit, (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const events = Array.isArray(req.body) ? req.body : [req.body];
+  let inserted = 0;
+  for (const event of events) {
+    try { recordAnalyticsEvent(db, event); inserted++; } catch {}
+  }
+  if (inserted > 0) res.json({ ok: true, inserted });
+  else res.status(400).json({ error: 'Невалидные события' });
+});
+
+// ── Admin: Analytics backend routes ──
+app.get('/api/admin/analytics/summary', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 12);
+  const path = String(req.query.path || '');
+  res.json(getAnalyticsSummary(db, { hours, path }));
+});
+
+app.get('/api/admin/analytics/heatmap-click', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '/');
+  const gridSize = Number(req.query.grid_size || 24);
+  const viewport = String(req.query.viewport || '');
+  res.json({ points: getHeatmapClickData(db, { hours, path, gridSize, viewport }) });
+});
+
+app.get('/api/admin/analytics/heatmap-mouse', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '/');
+  const gridSize = Number(req.query.grid_size || 32);
+  const viewport = String(req.query.viewport || '');
+  res.json({ points: getHeatmapMouseData(db, { hours, path, gridSize, viewport }) });
+});
+
+app.get('/api/admin/analytics/scroll-depth', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '');
+  res.json({ buckets: getScrollDepthData(db, { hours, path }) });
+});
+
+app.get('/api/admin/analytics/rage-clicks', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  const path = String(req.query.path || '');
+  res.json({ items: getRageClickData(db, { hours, path }) });
+});
+
+app.get('/api/admin/analytics/sessions', adminMiddleware, (req, res) => {
+  const hours = Number(req.query.hours || 24);
+  res.json(getSessionAnalytics(db, { hours }));
 });
 
 // ── Admin: Promo codes ──
