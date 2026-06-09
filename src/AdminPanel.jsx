@@ -1946,28 +1946,45 @@ function HeatmapTab() {
     adminFetch('/api/admin/analytics/rage-clicks?hours=' + h)
       .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setRageItems(d.items || []); }).catch(function() {});
 
-    // Load heatmap data before marking as done
+    // Load heatmap data and only then clear loading, so canvas draws with data
     var enc = encodeURIComponent('/');
     Promise.all([
       adminFetch('/api/admin/analytics/heatmap-click?hours=' + h + '&path=' + enc + '&grid_size=24'),
       adminFetch('/api/admin/analytics/heatmap-mouse?hours=' + h + '&path=' + enc + '&grid_size=32'),
     ]).then(function(responses) {
-      responses[0].json().then(function(d) { if (d) setClickPts(d.points || []); }).catch(function() {});
-      responses[1].json().then(function(d) { if (d) setMousePts(d.points || []); }).catch(function() {});
+      return Promise.all([
+        responses[0].ok ? responses[0].json() : Promise.resolve(null),
+        responses[1].ok ? responses[1].json() : Promise.resolve(null),
+      ]);
+    }).then(function(results) {
+      var clickData = results[0];
+      var mouseData = results[1];
+      if (clickData) setClickPts(clickData.points || []);
+      if (mouseData) setMousePts(mouseData.points || []);
     }).catch(function() {}).finally(function() {
       setLoading(false);
     });
   }
 
   function loadHeatmap(path) {
-    var token = getToken();
-    if (!token) return;
+    if (!getToken()) return;
+    setLoading(true);
     var enc = encodeURIComponent(path);
     var h = 24;
-    adminFetch('/api/admin/analytics/heatmap-click?hours=' + h + '&path=' + enc + '&grid_size=24')
-      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setClickPts(d.points || []); }).catch(function() {});
-    adminFetch('/api/admin/analytics/heatmap-mouse?hours=' + h + '&path=' + enc + '&grid_size=32')
-      .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setMousePts(d.points || []); }).catch(function() {});
+    Promise.all([
+      adminFetch('/api/admin/analytics/heatmap-click?hours=' + h + '&path=' + enc + '&grid_size=24'),
+      adminFetch('/api/admin/analytics/heatmap-mouse?hours=' + h + '&path=' + enc + '&grid_size=32'),
+    ]).then(function(responses) {
+      return Promise.all([
+        responses[0].ok ? responses[0].json() : Promise.resolve(null),
+        responses[1].ok ? responses[1].json() : Promise.resolve(null),
+      ]);
+    }).then(function(results) {
+      if (results[0]) setClickPts(results[0].points || []);
+      if (results[1]) setMousePts(results[1].points || []);
+    }).catch(function() {}).finally(function() {
+      setLoading(false);
+    });
   }
 
   useEffect(function() { loadAll(); }, []);
