@@ -82,7 +82,7 @@ function formatModelPrice(model) {
   if (model.category === 'image') return `${formatPrice(model.price)}/изобр`;
   if (model.category === 'video') return `${formatPrice(model.price)}/видео`;
   if (model.category === 'embedding') return `${formatPrice(model.price)}/1K`;
-  return `${formatPrice(model.price)}/сообщ`;
+  return `${formatPrice(model.price * 3)}/сообщ`;
 }
 
 function getModelToolType(model) {
@@ -2395,21 +2395,21 @@ export default function ModelsPage() {
                     <div className="flex flex-col lg:flex-row rounded-2xl overflow-hidden h-[500px]" style={{ backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
                       {/* Left: Model selection */}
                       <div className="lg:w-[240px] shrink-0 overflow-y-auto" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
-                        <div className="p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                          <span className="text-white/40 text-[10px] font-mono uppercase tracking-wider">Модели</span>
+                        <div className="p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                          <span className="text-white/70 text-[11px] font-mono uppercase tracking-wider font-semibold">Модели</span>
                         </div>
                         <div className="py-1">
                           {textModels.map(function(m) {
                             var sel = m.id === (activeTextModel ? activeTextModel.id : '');
                             return (
                               <button key={m.id} onClick={function() { setTextChatModelId(m.id); setTextMessages([]); }}
-                                className={'w-full text-left px-3 py-2.5 transition-all cursor-pointer ' + (sel ? 'text-white' : 'text-white/40 hover:text-white/70')}
-                                style={{ backgroundColor: sel ? 'rgba(255,255,255,0.06)' : 'transparent' }}>
+                                className={'w-full text-left px-3 py-2.5 transition-all cursor-pointer ' + (sel ? 'text-white' : 'text-white/60 hover:text-white/85')}
+                                style={{ backgroundColor: sel ? 'rgba(255,255,255,0.08)' : 'transparent' }}>
                                 <div className="flex items-center gap-2">
-                                  <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: sel ? m.color : 'rgba(255,255,255,0.2)' }} />
+                                  <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: sel ? m.color : 'rgba(255,255,255,0.35)' }} />
                                   <span className="text-xs font-medium truncate">{m.name}</span>
                                 </div>
-                                <div className="text-[10px] font-mono mt-0.5 truncate pl-3.5" style={{ color: sel ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.15)' }}>
+                                <div className="text-[10px] font-mono mt-0.5 truncate pl-3.5" style={{ color: sel ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.35)' }}>
                                   {formatModelPrice(m)}
                                 </div>
                               </button>
