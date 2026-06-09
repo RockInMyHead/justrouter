@@ -3154,6 +3154,30 @@ app.post('/api/admin/users/bulk-delete', adminMiddleware, (req, res) => {
   }
 });
 
+// ── Admin: Create user ──
+app.post('/api/admin/users', adminMiddleware, requireJsonFields(['email', 'password', 'name']), async (req, res) => {
+  const { email, password, name, balance = 0, marketing_enabled = true } = req.body;
+  if (password.length < 6) return res.status(400).json({ error: 'Пароль должен быть минимум 6 символов' });
+  try {
+    const normalizedEmail = normalizeEmail(email);
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+    if (existing) return res.status(409).json({ error: 'Пользователь с таким email уже существует' });
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const userApiKey = 'jr_' + crypto.randomBytes(24).toString('hex');
+    const result = db.prepare(`
+      INSERT INTO users (email, password, name, balance, api_key, marketing_enabled)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(normalizedEmail, hashedPassword, name.trim(), parseFloat(balance) || 0, userApiKey, marketing_enabled ? 1 : 0);
+    const userId = result.lastInsertRowid;
+    const user = db.prepare('SELECT id, email, name, balance, api_key, created_at, marketing_enabled FROM users WHERE id = ?').get(userId);
+    console.log('[admin] created user', { id: userId, email: normalizedEmail });
+    res.json({ success: true, user });
+  } catch (e) {
+    console.error('[admin] create user error', e);
+    res.status(500).json({ error: e.message || 'Ошибка при создании пользователя' });
+  }
+});
+
 app.post('/api/admin/telegram/broadcast', adminMiddleware, async (req, res) => {
   const { message } = req.body;
   if (!message || typeof message !== 'string' || message.trim().length < 1) {

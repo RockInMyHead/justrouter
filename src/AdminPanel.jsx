@@ -162,6 +162,37 @@ function UsersTab() {
   var [selectedUserIds, setSelectedUserIds] = useState([]);
   var [bulkDeleting, setBulkDeleting] = useState(false);
   var limit = 20;
+  var [showCreate, setShowCreate] = useState(false);
+  var [createForm, setCreateForm] = useState({ email: '', name: '', password: '', balance: '0' });
+  var [creating, setCreating] = useState(false);
+  var [createError, setCreateError] = useState('');
+
+  function handleCreate(e) {
+    e.preventDefault();
+    setCreateError('');
+    setCreating(true);
+    var token = getToken();
+    adminFetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify(createForm),
+    })
+      .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+      .then(function(res) {
+        if (res.status !== 200) {
+          setCreateError(res.data.error || 'Ошибка создания');
+        } else {
+          setShowCreate(false);
+          setCreateForm({ email: '', name: '', password: '', balance: '0' });
+          fetchUsers();
+        }
+        setCreating(false);
+      })
+      .catch(function(err) {
+        setCreateError(err.message || 'Ошибка соединения');
+        setCreating(false);
+      });
+  }
 
   function fetchUsers() {
     if (!getToken()) return;
@@ -574,6 +605,7 @@ function UsersTab() {
   }
 
   return (
+    <>
     <div className="space-y-4">
       <form onSubmit={handleSearch} className="flex gap-2">
         <div className="relative flex-1 max-w-xs">
@@ -584,6 +616,10 @@ function UsersTab() {
         <button type="submit"
           className="px-4 py-2 rounded-xl bg-white/10 text-white text-xs font-medium hover:bg-white/20 transition-all cursor-pointer">
           Поиск
+        </button>
+        <button type="button" onClick={function() { setShowCreate(true); setCreateError(''); }}
+          className="px-4 py-2 rounded-xl bg-emerald-500/15 text-emerald-300 text-xs font-medium hover:bg-emerald-500/25 border border-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5">
+          <UserPlus size={14} /> Создать
         </button>
       </form>
 
@@ -686,10 +722,57 @@ function UsersTab() {
         )}
       </div>
     </div>
+
+    {/* ── Create User Modal ── */}
+    {showCreate ? (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={function(e) { if (e.target === e.currentTarget) setShowCreate(false); }}>
+        <div className="w-full max-w-sm mx-4 rounded-2xl border border-white/10 bg-[#0a0a0a] p-6 backdrop-blur-xl shadow-2xl" onClick={function(e) { e.stopPropagation(); }}>
+          <h3 className="text-white font-semibold text-base mb-5">Создать пользователя</h3>
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div>
+              <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Email</label>
+              <input type="email" required value={createForm.email}
+                onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { email: e.target.value }); }); }}
+                className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" placeholder="user@example.com" />
+            </div>
+            <div>
+              <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Имя</label>
+              <input type="text" required value={createForm.name}
+                onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { name: e.target.value }); }); }}
+                className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" placeholder="Иван Иванов" />
+            </div>
+            <div>
+              <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Пароль</label>
+              <input type="password" required value={createForm.password}
+                onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { password: e.target.value }); }); }}
+                className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" placeholder="Минимум 6 символов" />
+            </div>
+            <div>
+              <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Начальный баланс (₽)</label>
+              <input type="number" value={createForm.balance}
+                onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { balance: e.target.value }); }); }}
+                className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" placeholder="0" />
+            </div>
+            {createError ? (
+              <div className="text-red-300 text-xs font-mono bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5">{createError}</div>
+            ) : null}
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={function() { setShowCreate(false); }}
+                className="flex-1 px-4 py-2.5 rounded-xl text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer">
+                Отмена
+              </button>
+              <button type="submit" disabled={creating}
+                className="flex-1 px-4 py-2.5 rounded-xl text-xs font-medium bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/20 transition-all cursor-pointer disabled:opacity-50">
+                {creating ? '...' : 'Создать'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }
-
-// ── Tab 3: Models ──
 function ModelsTab() {
   var [models, setModels] = useState([]);
   var [showAddForm, setShowAddForm] = useState(false);
@@ -1582,6 +1665,225 @@ function formatShortDate(value) {
   }
 }
 
+// ── Tab: Promo Codes ──
+function PromoCodesTab() {
+  var [codes, setCodes] = useState([]);
+  var [loading, setLoading] = useState(true);
+  var [error, setError] = useState('');
+  var [showCreate, setShowCreate] = useState(false);
+  var [createForm, setCreateForm] = useState({ code: '', amount_type: 'fixed', amount_value: '', max_uses: '100', expires_at: '', description: '' });
+  var [creating, setCreating] = useState(false);
+  var [createErr, setCreateErr] = useState('');
+
+  function load() {
+    if (!getToken()) return;
+    setLoading(true);
+    setError('');
+    adminFetch('/api/admin/promo-codes')
+      .then(function(r) { return r.ok ? r.json() : r.json().then(function(d) { throw new Error(d.error || 'Ошибка загрузки'); }); })
+      .then(setCodes)
+      .catch(function(e) { setError(e.message || 'Не удалось загрузить'); })
+      .finally(function() { setLoading(false); });
+  }
+
+  useEffect(function() { load(); }, []);
+
+  function togglePromo(id) {
+    adminFetch('/api/admin/promo-codes/' + id, {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + getToken() },
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { if (d.message) load(); })
+      .catch(function(err) { alert('Ошибка: ' + err.message); });
+  }
+
+  function deletePromo(id, code) {
+    if (!window.confirm('Удалить промокод «' + code + '»?')) return;
+    adminFetch('/api/admin/promo-codes/' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + getToken() },
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { if (d.message) load(); })
+      .catch(function(err) { alert('Ошибка: ' + err.message); });
+  }
+
+  function handleCreate(e) {
+    e.preventDefault();
+    setCreateErr('');
+    setCreating(true);
+    adminFetch('/api/admin/promo-codes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(createForm),
+    })
+      .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+      .then(function(res) {
+        if (res.status !== 200) {
+          setCreateErr(res.data.error || 'Ошибка создания');
+        } else {
+          setShowCreate(false);
+          setCreateForm({ code: '', amount_type: 'fixed', amount_value: '', max_uses: '100', expires_at: '', description: '' });
+          load();
+        }
+        setCreating(false);
+      })
+      .catch(function(err) {
+        setCreateErr(err.message || 'Ошибка соединения');
+        setCreating(false);
+      });
+  }
+
+  if (loading && codes.length === 0) {
+    return <div className="flex items-center justify-center py-20 text-white/30 text-sm font-mono">Загрузка промокодов...</div>;
+  }
+
+  if (error && codes.length === 0) {
+    return (
+      <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-6 text-center space-y-3">
+        <p className="text-red-300 text-sm">{error}</p>
+        <button type="button" onClick={load} className="text-xs px-4 py-2 rounded-lg bg-white/10 hover:bg-white/15 cursor-pointer">Повторить</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-white font-semibold text-lg">Промокоды</h2>
+          <p className="text-white/40 text-xs font-mono mt-1">{codes.length} кодов</p>
+        </div>
+        <button type="button" onClick={function() { setShowCreate(true); setCreateErr(''); }}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/20 transition-all cursor-pointer">
+          <Plus size={14} /> Создать код
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm overflow-hidden">
+        {codes.length === 0 ? (
+          <div className="py-12 text-center text-white/20 text-sm font-mono">Нет промокодов</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="text-white/30 border-b border-white/10">
+                  <th className="text-left py-3 px-4">Код</th>
+                  <th className="text-left py-3 px-4">Тип</th>
+                  <th className="text-right py-3 px-4">Значение</th>
+                  <th className="text-center py-3 px-4">Использовано</th>
+                  <th className="text-center py-3 px-4">Макс.</th>
+                  <th className="text-center py-3 px-4">Статус</th>
+                  <th className="text-left py-3 px-4">Срок</th>
+                  <th className="text-left py-3 px-4">Описание</th>
+                  <th className="text-center py-3 px-4 w-28">Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {codes.map(function(c) {
+                  var expired = c.expires_at && new Date(c.expires_at).getTime() < Date.now();
+                  var status = expired ? 'Истёк' : (c.is_active ? 'Активен' : 'Неактивен');
+                  var statusColor = expired ? 'text-red-400' : (c.is_active ? 'text-emerald-400' : 'text-amber-400');
+                  return (
+                    <tr key={c.id} className="border-b border-white/[0.02] text-white/70 hover:bg-white/[0.02]">
+                      <td className="py-3 px-4 font-semibold text-white/90">{c.code}</td>
+                      <td className="py-3 px-4 text-white/50">{c.amount_type === 'percent' ? '%' : '₽'}</td>
+                      <td className="py-3 px-4 text-right">{c.amount_type === 'percent' ? c.amount_value + '%' : formatCurrency(c.amount_value) + ' ₽'}</td>
+                      <td className="py-3 px-4 text-center text-white/50">{c.used_count || 0}</td>
+                      <td className="py-3 px-4 text-center text-white/50">{c.max_uses}</td>
+                      <td className={'py-3 px-4 text-center font-medium ' + statusColor}>{status}</td>
+                      <td className="py-3 px-4 text-white/50">{c.expires_at ? c.expires_at.slice(0, 10) : '—'}</td>
+                      <td className="py-3 px-4 text-white/50 truncate max-w-[200px]">{c.description || '—'}</td>
+                      <td className="py-3 px-4">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button onClick={function() { togglePromo(c.id); }}
+                            className="p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                            title={c.is_active ? 'Деактивировать' : 'Активировать'}>
+                            {c.is_active ? <ToggleRight size={14} className="text-emerald-400" /> : <ToggleLeft size={14} className="text-white/30" />}
+                          </button>
+                          <button onClick={function() { deletePromo(c.id, c.code); }}
+                            className="p-1.5 rounded-lg hover:bg-red-500/20 transition-colors cursor-pointer" title="Удалить">
+                            <Trash2 size={14} className="text-red-400/70" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Create Promo Code Modal ── */}
+      {showCreate ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={function(e) { if (e.target === e.currentTarget) setShowCreate(false); }}>
+          <div className="w-full max-w-sm mx-4 rounded-2xl border border-white/10 bg-[#0a0a0a] p-6 backdrop-blur-xl shadow-2xl" onClick={function(e) { e.stopPropagation(); }}>
+            <h3 className="text-white font-semibold text-base mb-5">Создать промокод</h3>
+            <form onSubmit={handleCreate} className="space-y-4">
+              <div>
+                <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Код</label>
+                <input type="text" required value={createForm.code}
+                  onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { code: e.target.value }); }); }}
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" placeholder="SUMMER2026" />
+              </div>
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Тип</label>
+                  <select value={createForm.amount_type}
+                    onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { amount_type: e.target.value }); }); }}
+                    className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono cursor-pointer">
+                    <option value="fixed">Фикс. (₽)</option>
+                    <option value="percent">Процент (%)</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Значение</label>
+                  <input type="number" required min="1" step="0.01" value={createForm.amount_value}
+                    onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { amount_value: e.target.value }); }); }}
+                    className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" />
+                </div>
+              </div>
+              <div>
+                <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Макс. использований</label>
+                <input type="number" min="1" value={createForm.max_uses}
+                  onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { max_uses: e.target.value }); }); }}
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" />
+              </div>
+              <div>
+                <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Срок действия (опционально)</label>
+                <input type="date" value={createForm.expires_at}
+                  onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { expires_at: e.target.value }); }); }}
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" />
+              </div>
+              <div>
+                <label className="text-white/40 text-[10px] font-mono uppercase tracking-wider block mb-1.5">Описание</label>
+                <input type="text" value={createForm.description}
+                  onChange={function(e) { setCreateForm(function(p) { return Object.assign({}, p, { description: e.target.value }); }); }}
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition-all font-mono" placeholder="Для чего этот код" />
+              </div>
+              {createErr ? (
+                <div className="text-red-300 text-xs font-mono bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5">{createErr}</div>
+              ) : null}
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={function() { setShowCreate(false); }}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer">
+                  Отмена
+                </button>
+                <button type="submit" disabled={creating}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-xs font-medium bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/20 transition-all cursor-pointer disabled:opacity-50">
+                  {creating ? '...' : 'Создать'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function UsersDashboardTab() {
   var [data, setData] = useState(null);
@@ -2210,6 +2512,7 @@ var ADMIN_TABS = [
   { id: 'model-logs', label: 'Логи моделей', icon: Layers },
   { id: 'corporate', label: 'Корп. клиенты', icon: Building2 },
   { id: 'referrals', label: 'Промокоды', icon: Gift },
+  { id: 'promo-codes', label: 'Коды', icon: Key },
   { id: 'users-dashboard', label: 'Дашборд юзеров', icon: Activity },
   { id: 'support', label: 'Поддержка', icon: MessageSquare },
   { id: 'blog', label: 'Блог', icon: FileText },
@@ -2252,6 +2555,7 @@ function AdminDashboard({ onLogout }) {
         {tab === 'model-dashboard' && <ModelDashboardTab />}
         {tab === 'corporate' && <CorporateTab />}
         {tab === 'referrals' && <ReferralsTab />}
+        {tab === 'promo-codes' && <PromoCodesTab />}
         {tab === 'users-dashboard' && <UsersDashboardTab />}
         {tab === 'support' && <SupportTab />}
         {tab === 'blog' && <BlogTab />}
