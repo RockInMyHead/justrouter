@@ -1932,32 +1932,41 @@ function HeatmapTab() {
   function loadAll() {
     if (!getToken()) return;
     setLoading(true);
-    var token = getToken();
     var h = 24;
 
-    adminFetch('/api/admin/analytics/summary?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+    adminFetch('/api/admin/analytics/summary?hours=' + h)
       .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setSummary(d); }).catch(function() {});
 
-    adminFetch('/api/admin/analytics/sessions?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+    adminFetch('/api/admin/analytics/sessions?hours=' + h)
       .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setSessionData(d); }).catch(function() {});
 
-    adminFetch('/api/admin/analytics/scroll-depth?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+    adminFetch('/api/admin/analytics/scroll-depth?hours=' + h)
       .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setScrollBuckets(d.buckets || []); }).catch(function() {});
 
-    adminFetch('/api/admin/analytics/rage-clicks?hours=' + h, { headers: { 'Authorization': 'Bearer ' + token } })
+    adminFetch('/api/admin/analytics/rage-clicks?hours=' + h)
       .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setRageItems(d.items || []); }).catch(function() {});
 
-    loadHeatmap(token, '/', true);
-    setLoading(false);
+    // Load heatmap data before marking as done
+    var enc = encodeURIComponent('/');
+    Promise.all([
+      adminFetch('/api/admin/analytics/heatmap-click?hours=' + h + '&path=' + enc + '&grid_size=24'),
+      adminFetch('/api/admin/analytics/heatmap-mouse?hours=' + h + '&path=' + enc + '&grid_size=32'),
+    ]).then(function(responses) {
+      responses[0].json().then(function(d) { if (d) setClickPts(d.points || []); }).catch(function() {});
+      responses[1].json().then(function(d) { if (d) setMousePts(d.points || []); }).catch(function() {});
+    }).catch(function() {}).finally(function() {
+      setLoading(false);
+    });
   }
 
-  function loadHeatmap(token, path) {
-    var enc = encodeURIComponent(path || selPath);
-    var p = path || selPath;
+  function loadHeatmap(path) {
+    var token = getToken();
+    if (!token) return;
+    var enc = encodeURIComponent(path);
     var h = 24;
-    adminFetch('/api/admin/analytics/heatmap-click?hours=' + h + '&path=' + enc + '&grid_size=24', { headers: { 'Authorization': 'Bearer ' + token } })
+    adminFetch('/api/admin/analytics/heatmap-click?hours=' + h + '&path=' + enc + '&grid_size=24')
       .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setClickPts(d.points || []); }).catch(function() {});
-    adminFetch('/api/admin/analytics/heatmap-mouse?hours=' + h + '&path=' + enc + '&grid_size=32', { headers: { 'Authorization': 'Bearer ' + token } })
+    adminFetch('/api/admin/analytics/heatmap-mouse?hours=' + h + '&path=' + enc + '&grid_size=32')
       .then(function(r) { return r.ok ? r.json() : null; }).then(function(d) { if (d) setMousePts(d.points || []); }).catch(function() {});
   }
 
@@ -2082,7 +2091,7 @@ function HeatmapTab() {
       {tab === 'heatmap' && (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            <select value={selPath} onChange={function(e) { setSelPath(e.target.value); loadHeatmap(getToken(), e.target.value); }}
+            <select value={selPath} onChange={function(e) { setSelPath(e.target.value); loadHeatmap(e.target.value); }}
               className="bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2 text-white text-xs font-mono outline-none cursor-pointer">
               {quickPaths.concat(['/account', '/faq', '/docs']).map(function(p) { return <option key={p} value={p}>{p}</option>; })}
             </select>
