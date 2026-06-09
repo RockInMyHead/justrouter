@@ -2222,8 +2222,15 @@ export default function ModelsPage() {
   // When text model changes, load its messages & free requests
   useEffect(function() {
     if (!textChatModelId) return;
-    api.getFreeRemaining(textChatModelId).then(function(r) { setTextFreeRequests(r.free_remaining); }).catch(function() {});
-    api.getMessages(textChatModelId).then(function(msgs) { setTextMessages(msgs); }).catch(function() {});
+    var cancelled = false;
+    var modelId = textChatModelId;
+    api.getFreeRemaining(modelId).then(function(r) {
+      if (!cancelled) setTextFreeRequests(r.free_remaining);
+    }).catch(function() {});
+    api.getMessages(modelId).then(function(msgs) {
+      if (!cancelled) setTextMessages(msgs);
+    }).catch(function() {});
+    return function() { cancelled = true; };
   }, [textChatModelId]);
 
   // Set default text model
