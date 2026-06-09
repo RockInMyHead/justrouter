@@ -10,6 +10,7 @@ function FrameSlot({
   disabled,
   accentColor,
   optional = false,
+  compact = false,
 }) {
   const inputRef = useRef(null);
 
@@ -23,6 +24,47 @@ function FrameSlot({
       onChange(null, err.message);
     }
   };
+
+  if (compact) {
+    return (
+      <div className="flex items-center gap-2">
+        {image ? (
+          <div className="relative size-10 rounded-lg overflow-hidden shrink-0" style={{ border: '1px solid rgba(255,255,255,0.10)' }}>
+            <img src={image.preview || image.url} alt={label} className="size-full object-cover" />
+            {!disabled && (
+              <button
+                type="button"
+                onClick={() => onChange(null)}
+                className="absolute inset-0 flex items-center justify-center text-[8px] cursor-pointer opacity-0 hover:opacity-100 transition-opacity"
+                style={{ backgroundColor: 'rgba(0,0,0,0.6)', color: '#fff' }}
+              >✕</button>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => inputRef.current?.click()}
+            className="size-10 rounded-lg flex items-center justify-center transition-colors cursor-pointer hover:bg-white/[0.04] disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            style={{ border: '1px dashed rgba(255,255,255,0.14)', color: accentColor }}
+          >
+            <Upload size={14} />
+          </button>
+        )}
+        <span className="text-white/40 text-[10px] font-medium">{label}{optional ? ' (опц.)' : ''}</span>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            handleFile(e.target.files);
+            e.target.value = '';
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col flex-1 min-w-0 gap-2">
@@ -92,8 +134,48 @@ export default function VideoFramePicker({
   disabled = false,
   accentColor = '#10B981',
   uploadError = '',
+  compact = false,
 }) {
   if (!supportsFirst && !supportsLast) return null;
+
+  if (compact) {
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <ImageIcon size={11} className="text-white/30 shrink-0" />
+          <span className="text-white/40 text-[9px] font-medium uppercase tracking-wide">Image-to-video</span>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {supportsFirst && (
+            <FrameSlot
+              label="Начальный кадр"
+              image={firstFrame}
+              onChange={(img, err) => onFirstFrameChange(img, err)}
+              disabled={disabled}
+              accentColor={accentColor}
+              compact
+            />
+          )}
+          {supportsLast && (
+            <FrameSlot
+              label="Конечный кадр"
+              image={lastFrame}
+              onChange={(img, err) => onLastFrameChange(img, err)}
+              disabled={disabled}
+              accentColor={accentColor}
+              optional={supportsFirst}
+              compact
+            />
+          )}
+        </div>
+        {uploadError && (
+          <div className="rounded-lg p-2 text-amber-300 text-[10px]" style={{ backgroundColor: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.18)' }}>
+            {uploadError}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">

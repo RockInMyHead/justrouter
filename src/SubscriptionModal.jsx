@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Check, Sparkles, Loader2, ExternalLink, MessageSquare, Image, Video } from 'lucide-react';
 import { api } from './api';
-import { trackFunnelEvent } from './analytics.js';
 
 const CATEGORY_ICONS = {
   text: MessageSquare,
@@ -133,7 +132,6 @@ export default function SubscriptionModal({ onClose, userTier, userName, onLogin
     }
     setPayingTier(tierKey);
     setError(null);
-    trackFunnelEvent('subscription_start', { tier: tierKey });
     api.createTierSubscriptionPayment(tierKey)
       .then(function (data) {
         if (data.confirmation_url) {

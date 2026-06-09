@@ -10,7 +10,6 @@ import HomeGallerySection from './HomeGallerySection.jsx';
 import HomeSitesSection from './HomeSitesSection.jsx';
 import { HOME_FAQ } from './seo.js';
 import { reachGoal } from './metrica.js';
-import { trackFunnelEvent } from './analytics.js';
 
 const BG_VIDEO = "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260508_155101_f2540600-6fe9-433e-8e48-b3f4b72f0727.mp4";
 
@@ -585,7 +584,7 @@ function AuthModal({ mode, onClose, onSuccess }) {
         setVerificationEmail(normalizedEmail);
         sessionStorage.setItem('velorix_pending_email', normalizedEmail);
         setResendNotice(result.message || 'Код отправлен на почту. Проверьте папку «Спам».');
-        trackFunnelEvent('registration_code_sent', { email_domain: normalizedEmail.split('@')[1], referral_code: getStoredReferralCode() || null })
+
         return;
       }
 
@@ -624,7 +623,6 @@ function AuthModal({ mode, onClose, onSuccess }) {
       clearStoredReferralCode();
       window.dispatchEvent(new CustomEvent('velorix:auth-success'));
       reachGoal('registration');
-      trackFunnelEvent('registration_complete', { referral_code: getStoredReferralCode() || null })
       onSuccess(result.user.name);
       setVerificationEmail('');
       setVerificationCode('');
@@ -654,8 +652,8 @@ function AuthModal({ mode, onClose, onSuccess }) {
   };
 
   var GLASS_BORDER = '1px solid rgba(255,255,255,0.06)';
-  var GLASS_BG = 'linear-gradient(135deg, rgba(15,15,25,0.92) 0%, rgba(10,10,20,0.95) 50%, rgba(20,15,30,0.92) 100%)';
-  var ACCENT = '#8B5CF6';
+  var GLASS_BG = 'linear-gradient(135deg, rgba(20,20,30,0.88) 0%, rgba(15,15,25,0.94) 50%, rgba(25,25,35,0.88) 100%)';
+  var ACCENT = '#FFFFFF';
   var INPUT_STYLE = {
     width: '100%',
     background: 'rgba(255,255,255,0.03)',
@@ -684,29 +682,18 @@ function AuthModal({ mode, onClose, onSuccess }) {
         className="relative w-full max-w-[420px] rounded-3xl p-5 sm:p-8 overflow-y-auto max-h-[90dvh]"
         style={{
           background: GLASS_BG,
-          backdropFilter: 'blur(24px)',
-          WebkitBackdropFilter: 'blur(24px)',
-          border: GLASS_BORDER,
-          boxShadow: '0 0 80px rgba(0,0,0,0.6), 0 0 120px rgba(139,92,246,0.04), inset 0 1px 0 rgba(255,255,255,0.04)',
+          backdropFilter: 'blur(40px)',
+          WebkitBackdropFilter: 'blur(40px)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          boxShadow: '0 0 80px rgba(0,0,0,0.5), 0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.06)',
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Ambient glow */}
+        {/* Ambient glow — стекло */}
         <div
           className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-64 rounded-full pointer-events-none"
           style={{
-            background: 'radial-gradient(circle, rgba(139,92,246,0.05) 0%, transparent 70%)',
-            zIndex: 0,
-          }}
-        />
-
-        {/* Shimmer */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background: 'linear-gradient(90deg, transparent 0%, rgba(139,92,246,0.04) 25%, rgba(255,255,255,0.02) 37%, rgba(139,92,246,0.04) 50%, transparent 100%)',
-            backgroundSize: '200% 100%',
-            animation: 'liquid-shimmer 5s ease-in-out infinite',
+            background: 'radial-gradient(circle, rgba(255,255,255,0.03) 0%, transparent 70%)',
             zIndex: 0,
           }}
         />
@@ -716,9 +703,7 @@ function AuthModal({ mode, onClose, onSuccess }) {
             <h2
               className="text-lg font-bold tracking-tight"
               style={{
-                background: 'linear-gradient(135deg, #F0E6FF 0%, #C4B5FD 50%, #93C5FD 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
+                color: 'rgba(255,255,255,0.9)',
                 fontFamily: 'Inter, sans-serif',
               }}
             >
@@ -764,13 +749,14 @@ function AuthModal({ mode, onClose, onSuccess }) {
                   }}
                   className="w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300 cursor-pointer"
                   style={{
-                    background: 'linear-gradient(135deg, ' + ACCENT + ' 0%, ' + ACCENT + 'CC 100%)',
+                    background: 'rgba(255,255,255,0.08)',
                     color: 'white',
-                    border: 'none',
-                    boxShadow: '0 0 20px ' + ACCENT + '20, inset 0 1px 0 rgba(255,255,255,0.15)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    backdropFilter: 'blur(12px)',
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)',
                   }}
-                  onMouseOver={function(e){ e.currentTarget.style.transform='translateY(-1px)'; e.currentTarget.style.boxShadow='0 0 30px ' + ACCENT + '30, inset 0 1px 0 rgba(255,255,255,0.2)' }}
-                  onMouseOut={function(e){ e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.boxShadow='0 0 20px ' + ACCENT + '20, inset 0 1px 0 rgba(255,255,255,0.15)' }}
+                  onMouseOver={function(e){ e.currentTarget.style.transform='translateY(-1px)'; e.currentTarget.style.background='rgba(255,255,255,0.12)' }}
+                  onMouseOut={function(e){ e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.background='rgba(255,255,255,0.08)' }}
                 >
                   Выбрать модель
                 </button>
@@ -807,7 +793,7 @@ function AuthModal({ mode, onClose, onSuccess }) {
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Иван Иванов"
                     style={INPUT_STYLE}
-                    onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(139,92,246,0.4)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(139,92,246,0.08)'; }}
+                    onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.25)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(255,255,255,0.06)'; }}
                     onBlur={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
                     className="w-full outline-none"
                   />
@@ -832,8 +818,8 @@ function AuthModal({ mode, onClose, onSuccess }) {
                   }}
                   placeholder="user@example.com"
                   style={INPUT_STYLE}
-                  onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(139,92,246,0.4)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(139,92,246,0.08)'; }}
-                  onBlur={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
+                    onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.25)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(255,255,255,0.06)'; }}
+                    onBlur={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
                   className="w-full outline-none"
                 />
               </div>
@@ -850,8 +836,8 @@ function AuthModal({ mode, onClose, onSuccess }) {
                   placeholder="••••••••"
                   style={INPUT_STYLE}
                   autoComplete={isLogin ? 'current-password' : 'new-password'}
-                  onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(139,92,246,0.4)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(139,92,246,0.08)'; }}
-                  onBlur={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
+                    onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.25)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(255,255,255,0.06)'; }}
+                    onBlur={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
                   className="w-full outline-none"
                 />
               </div>
@@ -872,11 +858,11 @@ function AuthModal({ mode, onClose, onSuccess }) {
                     checked={acceptedOffer}
                     onChange={(e) => setAcceptedOffer(e.target.checked)}
                     className="mt-0.5 size-4 shrink-0"
-                    style={{ accentColor: ACCENT }}
+                    style={{ accentColor: 'rgba(255,255,255,0.5)' }}
                   />
                   <span>
                     Принимаю{' '}
-                    <a href="/legal/offer" target="_blank" rel="noreferrer" style={{ color: '#C4B5FD', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
+                    <a href="/legal/offer" target="_blank" rel="noreferrer" style={{ color: 'rgba(255,255,255,0.5)', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
                       условия оферты
                     </a>
                   </span>
@@ -888,11 +874,11 @@ function AuthModal({ mode, onClose, onSuccess }) {
                     checked={acceptedPersonalData}
                     onChange={(e) => setAcceptedPersonalData(e.target.checked)}
                     className="mt-0.5 size-4 shrink-0"
-                    style={{ accentColor: ACCENT }}
+                    style={{ accentColor: 'rgba(255,255,255,0.5)' }}
                   />
                   <span>
                     Даю{' '}
-                    <a href="/legal/personal-data-consent" target="_blank" rel="noreferrer" style={{ color: '#C4B5FD', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
+                    <a href="/legal/personal-data-consent" target="_blank" rel="noreferrer" style={{ color: 'rgba(255,255,255,0.5)', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
                       согласие на обработку данных
                     </a>
                   </span>
@@ -904,7 +890,7 @@ function AuthModal({ mode, onClose, onSuccess }) {
                     checked={acceptedMarketing}
                     onChange={(e) => setAcceptedMarketing(e.target.checked)}
                     className="mt-0.5 size-4 shrink-0"
-                    style={{ accentColor: ACCENT }}
+                    style={{ accentColor: 'rgba(255,255,255,0.5)' }}
                   />
                   <span>Согласен на рекламные материалы</span>
                 </label>
@@ -932,10 +918,11 @@ function AuthModal({ mode, onClose, onSuccess }) {
               onMouseLeave={function () { setHoverBtn(''); }}
               className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
-                background: 'linear-gradient(135deg, ' + ACCENT + ' 0%, ' + ACCENT + 'CC 100%)',
+                background: 'rgba(255,255,255,0.06)',
                 color: 'white',
-                border: 'none',
-                boxShadow: hoverBtn === 'submit' ? '0 0 30px ' + ACCENT + '30, inset 0 1px 0 rgba(255,255,255,0.2)' : '0 0 20px ' + ACCENT + '20, inset 0 1px 0 rgba(255,255,255,0.15)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                backdropFilter: 'blur(12px)',
+                boxShadow: hoverBtn === 'submit' ? '0 0 30px rgba(255,255,255,0.04), inset 0 1px 0 rgba(255,255,255,0.12)' : '0 0 20px rgba(255,255,255,0.02), inset 0 1px 0 rgba(255,255,255,0.08)',
                 transform: hoverBtn === 'submit' ? 'translateY(-1px)' : 'translateY(0)',
               }}
             >
@@ -977,8 +964,8 @@ function AuthModal({ mode, onClose, onSuccess }) {
                     fontFamily: 'monospace',
                     transition: 'border-color 0.3s, box-shadow 0.3s',
                   }}
-                  onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(139,92,246,0.4)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(139,92,246,0.08)'; }}
-                  onBlur={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
+                    onFocus={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.25)'; e.currentTarget.style.boxShadow = '0 0 15px rgba(255,255,255,0.06)'; }}
+                    onBlur={function(e){ e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
                 />
               </div>
             </div>
@@ -987,13 +974,14 @@ function AuthModal({ mode, onClose, onSuccess }) {
               disabled={loading || verificationCode.length < 6}
               className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
-                background: 'linear-gradient(135deg, ' + ACCENT + ' 0%, ' + ACCENT + 'CC 100%)',
+                background: 'rgba(255,255,255,0.06)',
                 color: 'white',
-                border: 'none',
-                boxShadow: '0 0 20px ' + ACCENT + '20, inset 0 1px 0 rgba(255,255,255,0.15)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                backdropFilter: 'blur(12px)',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)',
               }}
-              onMouseOver={function(e){ e.currentTarget.style.boxShadow = '0 0 30px ' + ACCENT + '30, inset 0 1px 0 rgba(255,255,255,0.2)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-              onMouseOut={function(e){ e.currentTarget.style.boxShadow = '0 0 20px ' + ACCENT + '20, inset 0 1px 0 rgba(255,255,255,0.15)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+              onMouseOver={function(e){ e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+              onMouseOut={function(e){ e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.transform = 'translateY(0)'; }}
             >
               {loading ? 'Проверка...' : 'Подтвердить'}
             </button>
@@ -1122,7 +1110,6 @@ export default function App() {
   const location = useLocation();
   const [authModal, _setAuthModal] = useState(null); // 'login' | 'register' | null
   const setAuthModal = (val) => {
-    if (val === 'register') trackFunnelEvent('registration_start', { path: location.pathname })
     _setAuthModal(val)
   }
   const [userName, setUserName] = useState('');

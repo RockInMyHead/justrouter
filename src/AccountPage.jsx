@@ -6,7 +6,6 @@ import { getToken, clearAuth, getSession } from './auth.js';
 import AppSidebar from './AppSidebar.jsx';
 import AppMobileNav from './AppMobileNav.jsx';
 import { reachGoal } from './metrica.js';
-import { trackFunnelEvent } from './analytics.js';
 
 const pageBg = 'var(--page-bg)';
 const panelBg = 'var(--panel-bg)';
@@ -123,7 +122,6 @@ export default function AccountPage() {
       const payment = await api.createYookassaPayment(amount);
       if (!payment.confirmation_url) throw new Error('ЮKassa не вернула ссылку на оплату');
       reachGoal('topup', { amount });
-      trackFunnelEvent('topup_start', { amount, is_subscription: false })
       window.location.href = payment.confirmation_url;
     } catch (e) {
       setTopupError(e.message || 'Не удалось создать платеж');

@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Banknote, TrendingUp, Zap, Star, ChevronDown, ArrowLeft, Coins, X as XIcon, Send, ExternalLink, Clock, MessageSquare, Info, Key, Image as ImageIcon, Mic, Volume2, Square, Wand2, FileAudio, Cpu } from 'lucide-react';
+import { Search, Banknote, TrendingUp, Zap, Star, ChevronDown, ArrowLeft, Coins, X as XIcon, Send, ExternalLink, Clock, MessageSquare, Info, Key, Image as ImageIcon, Mic, Volume2, Square, Wand2, FileAudio, Cpu, Film } from 'lucide-react';
 import { api, isAuthError } from './api.js';
 import { getToken, clearAuth } from './auth.js';
 import AppSidebar from './AppSidebar.jsx';
+import { getVideoOptionLists, modelSupportsFrameType, videoFramesToPayload } from './videoMeta.js';
+import VideoFramePicker from './VideoFramePicker.jsx';
 
 const pageBg = 'var(--page-bg)';
 const panelBg = 'var(--panel-bg)';
@@ -427,140 +429,407 @@ function ImageTool({ model: initialModel, onBalanceChange, onLoginRequired }) {
   }
 
   return (
-    <div className="flex-1 flex min-h-0">
+    <div className="flex-1 flex min-h-0" style={{ maxHeight: 'calc(100vh - 140px)' }}>
       {/* Left: model list */}
-      <div className="w-56 shrink-0 overflow-y-auto p-3 space-y-2" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
-        <div className="text-white/30 text-[10px] font-mono uppercase tracking-wider mb-3 px-2">Модели</div>
+      <div className="w-48 shrink-0 overflow-y-auto p-2 space-y-1" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="text-white/30 text-[9px] font-mono uppercase tracking-wider mb-2 px-2">Модели</div>
         {imageModels.map(function(m) {
           var active = m.id === (model && model.id);
           return (
             <div
               key={m.id}
               onClick={function() { setCurrentModel(m); }}
-              className={'px-3 py-2.5 rounded-xl text-xs cursor-pointer transition-all ' + (active
+              className={'px-2 py-2 rounded-lg text-xs cursor-pointer transition-all ' + (active
                 ? 'text-white' : 'text-white/50 hover:text-white/80')}
               style={{
                 backgroundColor: active ? 'rgba(255,255,255,0.06)' : 'transparent',
                 borderLeft: active ? '2px solid ' + m.color : '2px solid transparent',
               }}
             >
-              <div className="font-medium truncate">{m.name}</div>
-              <div className="text-white/30 text-[10px] font-mono mt-0.5 truncate">{m.provider}</div>
-              <div className="text-white/40 text-[10px] font-mono mt-0.5">{formatModelPrice(m)}</div>
+              <div className="font-medium truncate text-[11px]">{m.name}</div>
+              <div className="text-white/30 text-[9px] font-mono truncate">{m.provider}</div>
+              <div className="text-white/40 text-[9px] font-mono">{formatModelPrice(m)}</div>
             </div>
           );
         })}
       </div>
 
       {/* Right: generation panel */}
-      <div className="flex-1 p-5 sm:p-6 overflow-y-auto">
-        <div className="max-w-2xl mx-auto space-y-4">
-          <div>
-            <h3 className="text-white text-base font-semibold">Генерация изображения</h3>
-            <p className="text-white/40 text-xs mt-1">Текст + опционально ваши фото как референс (image-to-image).</p>
-          </div>
-
-          {/* Current model badge */}
-          {model && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ backgroundColor: `${model.color}10`, border: `1px solid ${model.color}20` }}>
-              <Zap size={12} style={{ color: model.color }} />
-              <span className="text-xs font-medium" style={{ color: model.color + 'dd' }}>{model.name}</span>
-              <span className="text-white/30 text-[10px] font-mono ml-auto">{formatModelPrice(model)}</span>
-            </div>
-          )}
-
-          <textarea
-            value={prompt}
-            onChange={function(e) { setPrompt(e.target.value); }}
-            className="w-full min-h-24 rounded-2xl p-4 text-white text-sm placeholder-white/20 outline-none resize-none"
-            style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
-            placeholder="Промпт для изображения..."
-          />
-
-          {/* Reference images */}
-          <div>
-            <div className="flex flex-wrap gap-2 mb-2">
-              {referenceImages.map(function(url, idx) {
-                return (
-                  <div key={idx} className="relative size-16 rounded-lg overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.1)' }}>
-                    <img src={url} className="size-full object-cover" alt="reference" />
-                    <button
-                      onClick={function() { removeRefImage(idx); }}
-                      className="absolute top-0 right-0 size-5 flex items-center justify-center text-[10px] cursor-pointer"
-                      style={{ backgroundColor: 'rgba(0,0,0,0.7)', color: '#fff' }}
-                    >✕</button>
-                  </div>
-                );
-              })}
-            </div>
-            {referenceImages.length < 4 && (
-              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs cursor-pointer"
-                style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.5)' }}>
-                <input type="file" accept="image/*" multiple onChange={handleFileUpload} className="hidden" />
-                + Референс
-              </label>
-            )}
-          </div>
-
-          {/* Aspect ratio & size */}
-          <div className="flex gap-3">
-            <select value={aspectRatio} onChange={function(e) { setAspectRatio(e.target.value); }}
-              className="flex-1 rounded-xl px-3 py-2 text-xs text-white outline-none font-mono"
-              style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <option value="1:1" style={{ backgroundColor: '#111' }}>1:1 (Квадрат)</option>
-              <option value="16:9" style={{ backgroundColor: '#111' }}>16:9 (Горизонт)</option>
-              <option value="9:16" style={{ backgroundColor: '#111' }}>9:16 (Вертикаль)</option>
-              <option value="4:3" style={{ backgroundColor: '#111' }}>4:3</option>
-              <option value="3:2" style={{ backgroundColor: '#111' }}>3:2</option>
-            </select>
-            <select value={imageSize} onChange={function(e) { setImageSize(e.target.value); }}
-              className="flex-1 rounded-xl px-3 py-2 text-xs text-white outline-none font-mono"
-              style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <option value="1K" style={{ backgroundColor: '#111' }}>1K (1024×1024)</option>
-              <option value="2K" style={{ backgroundColor: '#111' }}>2K (2048×2048)</option>
-              <option value="4K" style={{ backgroundColor: '#111' }}>4K (4096×4096)</option>
-            </select>
-          </div>
-
-          {error && (
-            <div className="rounded-xl p-3 text-red-300 text-xs" style={{ backgroundColor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)' }}>{error}</div>
-          )}
-
-          <button onClick={handleGenerate} disabled={loading || !prompt.trim() || !model}
-            className="w-full py-3 rounded-xl text-sm font-semibold transition-opacity disabled:opacity-40 cursor-pointer"
-            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#fff' }}>
-            {loading ? (
-              <span>Генерация... {elapsed > 0 ? (elapsed / 1000).toFixed(1) + 's' : ''}</span>
-            ) : (
-              <span><Wand2 size={16} className="inline mr-2" />Сгенерировать</span>
-            )}
-          </button>
-
-          {/* Results */}
-          {generatedImages.length > 0 && (
-            <div className="space-y-3">
+      <div className="flex-1 p-3 sm:p-4 overflow-y-auto">
+        <div className="max-w-2xl mx-auto">
+          {/* Header + result area */}
+          {generatedImages.length > 0 ? (
+            <div className="mb-3 space-y-2">
               {generatedImages.map(function(url, idx) {
                 return (
-                  <div key={idx} className="rounded-2xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
-                    <img src={url} className="w-full" alt={'generated-' + idx} />
+                  <div key={idx} className="rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <img src={url} className="w-full max-h-64 object-contain" alt={'generated-' + idx} />
                   </div>
                 );
               })}
+              {generatedText && (
+                <div className="rounded-lg p-3 text-white/80 text-xs whitespace-pre-wrap" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                  {generatedText}
+                </div>
+              )}
             </div>
-          )}
-          {generatedText && (
-            <div className="rounded-xl p-4 text-white/80 text-sm whitespace-pre-wrap" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              {generatedText}
-            </div>
-          )}
-          {!generatedImages.length && !generatedText && !loading && (
-            <div className="aspect-video rounded-2xl overflow-hidden relative flex items-center justify-center" style={{ background: 'radial-gradient(circle at 25% 20%, rgba(16,185,129,0.25), transparent 32%), radial-gradient(circle at 80% 75%, rgba(255,255,255,0.1), transparent 36%), #111', border: '1px solid rgba(255,255,255,0.08)' }}>
-              <div className="relative z-10 text-center px-6">
-                <ImageIcon size={34} className="mx-auto mb-3 text-white/40" />
-                <p className="text-white/50 text-sm">Результат появится здесь</p>
+          ) : !loading ? (
+            <div className="rounded-xl overflow-hidden relative flex items-center justify-center mb-3" style={{ height: '96px', background: 'radial-gradient(circle at 25% 20%, rgba(16,185,129,0.25), transparent 32%), radial-gradient(circle at 80% 75%, rgba(255,255,255,0.1), transparent 36%), #111', border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div className="text-center">
+                <ImageIcon size={20} className="mx-auto mb-1 text-white/40" />
+                <p className="text-white/40 text-[11px]">Результат появится здесь</p>
               </div>
             </div>
-          )}
+          ) : null}
+
+          {/* Controls */}
+          <div className="space-y-2">
+            {/* Current model badge */}
+            {model && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg" style={{ backgroundColor: model.color + '10', border: '1px solid ' + model.color + '20' }}>
+                <Zap size={10} style={{ color: model.color }} />
+                <span className="text-[11px] font-medium" style={{ color: model.color + 'dd' }}>{model.name}</span>
+                <span className="text-white/30 text-[9px] font-mono ml-auto">{formatModelPrice(model)}</span>
+              </div>
+            )}
+
+            <textarea
+              value={prompt}
+              onChange={function(e) { setPrompt(e.target.value); }}
+              className="w-full min-h-[52px] max-h-20 rounded-xl px-3 py-2 text-white text-xs placeholder-white/20 outline-none resize-none"
+              style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+              placeholder="Промпт для изображения..."
+              rows={2}
+            />
+
+            {/* Reference images + controls row */}
+            <div className="flex items-center gap-2">
+              {referenceImages.length > 0 && (
+                <div className="flex gap-1">
+                  {referenceImages.map(function(url, idx) {
+                    return (
+                      <div key={idx} className="relative size-8 rounded-md overflow-hidden shrink-0" style={{ border: '1px solid rgba(255,255,255,0.1)' }}>
+                        <img src={url} className="size-full object-cover" alt="ref" />
+                        <button onClick={function() { removeRefImage(idx); }}
+                          className="absolute inset-0 flex items-center justify-center text-[8px] cursor-pointer opacity-0 hover:opacity-100 transition-opacity"
+                          style={{ backgroundColor: 'rgba(0,0,0,0.6)', color: '#fff' }}>✕</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {referenceImages.length < 4 && (
+                <label className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] cursor-pointer shrink-0"
+                  style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.5)' }}>
+                  <input type="file" accept="image/*" multiple onChange={handleFileUpload} className="hidden" />
+                  + Референс
+                </label>
+              )}
+            </div>
+
+            {/* Aspect ratio & size */}
+            <div className="flex gap-2">
+              <select value={aspectRatio} onChange={function(e) { setAspectRatio(e.target.value); }}
+                className="flex-1 rounded-lg px-2 py-1.5 text-[10px] text-white outline-none font-mono"
+                style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <option value="1:1" style={{ backgroundColor: '#111' }}>1:1</option>
+                <option value="16:9" style={{ backgroundColor: '#111' }}>16:9</option>
+                <option value="9:16" style={{ backgroundColor: '#111' }}>9:16</option>
+                <option value="4:3" style={{ backgroundColor: '#111' }}>4:3</option>
+                <option value="3:2" style={{ backgroundColor: '#111' }}>3:2</option>
+              </select>
+              <select value={imageSize} onChange={function(e) { setImageSize(e.target.value); }}
+                className="flex-1 rounded-lg px-2 py-1.5 text-[10px] text-white outline-none font-mono"
+                style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <option value="1K" style={{ backgroundColor: '#111' }}>1K</option>
+                <option value="2K" style={{ backgroundColor: '#111' }}>2K</option>
+                <option value="4K" style={{ backgroundColor: '#111' }}>4K</option>
+              </select>
+            </div>
+
+            {error && (
+              <div className="rounded-lg p-2 text-red-300 text-[10px]" style={{ backgroundColor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)' }}>{error}</div>
+            )}
+
+            <button onClick={handleGenerate} disabled={loading || !prompt.trim() || !model}
+              className="w-full py-2 rounded-lg text-xs font-semibold transition-opacity disabled:opacity-40 cursor-pointer"
+              style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#fff' }}>
+              {loading ? (
+                <span>Генерация... {elapsed > 0 ? (elapsed / 1000).toFixed(1) + 's' : ''}</span>
+              ) : (
+                <span><Wand2 size={14} className="inline mr-1" />Сгенерировать</span>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VideoTool({ model: initialModel, onBalanceChange, onLoginRequired }) {
+  var [currentModel, setCurrentModel] = useState(initialModel);
+  var promptState = useState('');
+  var prompt = promptState[0];
+  var setPrompt = promptState[1];
+  var durationState = useState(8);
+  var duration = durationState[0];
+  var setDuration = durationState[1];
+  var resolutionState = useState('720p');
+  var resolution = resolutionState[0];
+  var setResolution = resolutionState[1];
+  var aspectState = useState('16:9');
+  var aspectRatio = aspectState[0];
+  var setAspectRatio = aspectState[1];
+  var [firstFrame, setFirstFrame] = useState(null);
+  var [lastFrame, setLastFrame] = useState(null);
+  var [videoModels, setVideoModels] = useState([]);
+  var loadingState = useState(false);
+  var loading = loadingState[0];
+  var setLoading = loadingState[1];
+  var errorState = useState('');
+  var error = errorState[0];
+  var setError = errorState[1];
+  var [jobId, setJobId] = useState(null);
+  var [jobStatus, setJobStatus] = useState(null);
+  var [streamUrls, setStreamUrls] = useState([]);
+  var [costRub, setCostRub] = useState(null);
+  var elapsedState = useState(0);
+  var elapsed = elapsedState[0];
+  var setElapsed = elapsedState[1];
+  var timerRef = useRef(null);
+  var pollRef = useRef(null);
+  var model = currentModel;
+
+  // Load all video models from DB
+  useEffect(function() {
+    api.getModels({ category: 'video' }).then(function(m) {
+      var enriched = m.map(function(mdl) { return enrichModel(mdl); });
+      enriched.sort(function(a, b) { return a.price - b.price; });
+      setVideoModels(enriched);
+      if (initialModel && !enriched.some(function(e) { return e.id === initialModel.id; })) {
+        setCurrentModel(enriched[0] || initialModel);
+      }
+    }).catch(function() {});
+  }, []);
+
+  function getOptions() {
+    return getVideoOptionLists(model);
+  }
+
+  function handleGenerate() {
+    if (!prompt.trim() || !model) return;
+    setLoading(true);
+    setError('');
+    setStreamUrls([]);
+    setJobId(null);
+    setJobStatus(null);
+    setCostRub(null);
+    var start = Date.now();
+    setElapsed(0);
+    timerRef.current = setInterval(function() {
+      setElapsed(Date.now() - start);
+    }, 100);
+
+    var payload = {
+      model_id: model.id,
+      prompt: prompt.trim(),
+      duration: duration,
+      resolution: resolution,
+      aspect_ratio: aspectRatio,
+    };
+
+    // Add image frames if model supports them
+    if (firstFrame || lastFrame) {
+      payload.images = videoFramesToPayload(firstFrame, lastFrame);
+    }
+
+    api.generateVideo(payload).then(function(res) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setLoading(false);
+      if (res.job_id) {
+        setJobId(res.job_id);
+        setJobStatus(res.status || 'pending');
+        if (res.balance != null && onBalanceChange) onBalanceChange(res.balance);
+        // Start polling
+        startPolling(res.job_id);
+      }
+    }).catch(function(err) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setLoading(false);
+      if (isAuthError(err) && onLoginRequired) {
+        onLoginRequired();
+        return;
+      }
+      setError(err.message || 'Ошибка запуска генерации');
+    });
+  }
+
+  function startPolling(id) {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(function() {
+      api.getVideoJob(id).then(function(res) {
+        setJobStatus(res.status);
+        if (res.stream_urls && res.stream_urls.length > 0) {
+          setStreamUrls(res.stream_urls);
+        }
+        if (res.cost_rub != null) setCostRub(res.cost_rub);
+        if (res.balance != null && onBalanceChange) onBalanceChange(res.balance);
+        if (res.status === 'completed' || res.status === 'failed') {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      }).catch(function() {
+        // keep polling
+      });
+    }, 5000);
+  }
+
+  useEffect(function() {
+    return function() {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  var opts = getOptions();
+
+  return (
+    <div className="flex-1 flex min-h-0" style={{ maxHeight: 'calc(100vh - 140px)' }}>
+      {/* Left: model list */}
+      <div className="w-48 shrink-0 overflow-y-auto p-2 space-y-1" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="text-white/30 text-[9px] font-mono uppercase tracking-wider mb-2 px-2">Модели</div>
+        {videoModels.map(function(m) {
+          var active = m.id === (model && model.id);
+          return (
+            <div
+              key={m.id}
+              onClick={function() { setCurrentModel(m); }}
+              className={'px-2 py-2 rounded-lg text-xs cursor-pointer transition-all ' + (active
+                ? 'text-white' : 'text-white/50 hover:text-white/80')}
+              style={{
+                backgroundColor: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                borderLeft: active ? '2px solid ' + m.color : '2px solid transparent',
+              }}
+            >
+              <div className="font-medium truncate text-[11px]">{m.name}</div>
+              <div className="text-white/30 text-[9px] font-mono truncate">{m.provider}</div>
+              <div className="text-white/40 text-[9px] font-mono">{formatModelPrice(m)}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Right: generation panel */}
+      <div className="flex-1 p-3 sm:p-4 overflow-y-auto">
+        <div className="max-w-2xl mx-auto">
+          {/* Result area */}
+          {streamUrls.length > 0 ? (
+            <div className="mb-3 space-y-2">
+              {streamUrls.map(function(url, idx) {
+                return (
+                  <div key={idx} className="rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <video src={url} controls className="w-full max-h-64" autoPlay={idx === 0} />
+                  </div>
+                );
+              })}
+              {costRub != null && (
+                <div className="text-white/30 text-[10px] font-mono text-center">Стоимость: {costRub.toFixed(2)} ₽</div>
+              )}
+            </div>
+          ) : jobStatus ? (
+            <div className="rounded-xl overflow-hidden relative flex items-center justify-center mb-3" style={{ height: '96px', border: '1px solid rgba(255,255,255,0.06)', backgroundColor: 'rgba(255,255,255,0.02)' }}>
+              <div className="text-center">
+                <div className="size-6 rounded-full animate-spin mx-auto mb-1" style={{ border: '2px solid rgba(255,255,255,0.06)', borderTopColor: 'rgba(255,255,255,0.3)' }} />
+                <p className="text-white/40 text-[11px] font-mono">
+                  {jobStatus === 'pending' ? 'В очереди...' : jobStatus === 'processing' ? 'Генерируем...' : jobStatus}
+                </p>
+                {costRub != null && <p className="text-white/30 text-[10px] font-mono mt-1">{costRub.toFixed(2)} ₽</p>}
+              </div>
+            </div>
+          ) : !loading ? (
+            <div className="rounded-xl overflow-hidden relative flex items-center justify-center mb-3" style={{ height: '96px', background: 'radial-gradient(circle at 25% 20%, rgba(244,63,94,0.25), transparent 32%), radial-gradient(circle at 80% 75%, rgba(255,255,255,0.1), transparent 36%), #111', border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div className="text-center">
+                <Film size={20} className="mx-auto mb-1 text-white/40" />
+                <p className="text-white/40 text-[11px]">Результат появится здесь</p>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Controls */}
+          <div className="space-y-2">
+            {/* Current model badge */}
+            {model && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg" style={{ backgroundColor: model.color + '10', border: '1px solid ' + model.color + '20' }}>
+                <Film size={10} style={{ color: model.color }} />
+                <span className="text-[11px] font-medium" style={{ color: model.color + 'dd' }}>{model.name}</span>
+                <span className="text-white/30 text-[9px] font-mono ml-auto">{formatModelPrice(model)}</span>
+              </div>
+            )}
+
+            <textarea
+              value={prompt}
+              onChange={function(e) { setPrompt(e.target.value); }}
+              className="w-full min-h-[52px] max-h-20 rounded-xl px-3 py-2 text-white text-xs placeholder-white/20 outline-none resize-none"
+              style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+              placeholder="Промпт для видео..."
+              rows={2}
+            />
+
+            {/* Image-to-video frames */}
+            {model && (
+              <VideoFramePicker
+                firstFrame={firstFrame}
+                lastFrame={lastFrame}
+                onFirstFrameChange={function(img, err) { setFirstFrame(img); if (err) setError(err); }}
+                onLastFrameChange={function(img, err) { setLastFrame(img); if (err) setError(err); }}
+                supportsFirst={modelSupportsFrameType(model, 'first_frame')}
+                supportsLast={modelSupportsFrameType(model, 'last_frame')}
+                disabled={loading}
+                accentColor={model.color || '#10B981'}
+                compact
+              />
+            )}
+
+            {/* Duration, resolution, aspect ratio */}
+            <div className="flex gap-2">
+              <select value={duration} onChange={function(e) { setDuration(Number(e.target.value)); }}
+                className="flex-1 rounded-lg px-2 py-1.5 text-[10px] text-white outline-none font-mono"
+                style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                {(opts.durations || [4, 6, 8]).map(function(d) {
+                  return <option key={d} value={d} style={{ backgroundColor: '#111' }}>{d} сек</option>;
+                })}
+              </select>
+              <select value={resolution} onChange={function(e) { setResolution(e.target.value); }}
+                className="flex-1 rounded-lg px-2 py-1.5 text-[10px] text-white outline-none font-mono"
+                style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                {(opts.resolutions || ['720p', '1080p']).map(function(r) {
+                  return <option key={r} value={r} style={{ backgroundColor: '#111' }}>{r}</option>;
+                })}
+              </select>
+              <select value={aspectRatio} onChange={function(e) { setAspectRatio(e.target.value); }}
+                className="flex-1 rounded-lg px-2 py-1.5 text-[10px] text-white outline-none font-mono"
+                style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                {(opts.aspectRatios || ['16:9', '9:16']).map(function(a) {
+                  return <option key={a} value={a} style={{ backgroundColor: '#111' }}>{a}</option>;
+                })}
+              </select>
+            </div>
+
+            {error && (
+              <div className="rounded-lg p-2 text-red-300 text-[10px]" style={{ backgroundColor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)' }}>{error}</div>
+            )}
+
+            <button onClick={handleGenerate} disabled={loading || !prompt.trim() || !model}
+              className="w-full py-2 rounded-lg text-xs font-semibold transition-opacity disabled:opacity-40 cursor-pointer"
+              style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#fff' }}>
+              {loading ? (
+                <span>Генерация... {elapsed > 0 ? (elapsed / 1000).toFixed(1) + 's' : ''}</span>
+              ) : (
+                <span><Film size={14} className="inline mr-1" />Сгенерировать</span>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -832,7 +1101,7 @@ function ModelModal({ model, onClose, onApiKey, initialMessage = '' }) {
           {toolType === 'tts' && <TtsTool model={model} />}
           {toolType === 'stt' && <SttTool model={model} />}
           {toolType === 'image' && <ImageTool model={model} balance={balance} onBalanceChange={function(b) { setBalance(b); }} />}
-          {(toolType === 'video' || toolType === 'embedding') && <UtilityTool model={model} />}
+          {(toolType === 'video' || toolType === 'embedding') && <VideoTool model={model} balance={balance} onBalanceChange={function(b) { setBalance(b); }} />}
         </div>
       </div>
     </div>
@@ -1266,6 +1535,9 @@ export default function ModelsPage() {
   var imageToolModelIdState = useState('');
   var imageToolModelId = imageToolModelIdState[0];
   var setImageToolModelId = imageToolModelIdState[1];
+  var videoToolModelIdState = useState('');
+  var videoToolModelId = videoToolModelIdState[0];
+  var setVideoToolModelId = videoToolModelIdState[1];
 
   useEffect(function() {
     var token = getToken();
@@ -1491,13 +1763,14 @@ export default function ModelsPage() {
         {/* Chat composer + grid */}
         <div className="px-5 sm:px-8 md:pl-6 py-8">
           <div className="max-w-7xl mx-auto">
-            {category === 'image' ? (function() {
-              var imgs = models.filter(function(m) { return m.category === 'image'; }).sort(function(a, b) { return a.price - b.price; });
-              var active = imgs.find(function(m) { return m.id === imageToolModelId; }) || imgs[0] || null;
+            {category === 'image' || category === 'video' ? (function() {
+              var catModels = models.filter(function(m) { return m.category === category; }).sort(function(a, b) { return a.price - b.price; });
+              var active = catModels.find(function(m) { return m.id === (category === 'image' ? imageToolModelId : videoToolModelId); }) || catModels[0] || null;
               if (!active) return null;
-              return (
-                <ImageTool model={active} balance={balance} onBalanceChange={setBalance} onLoginRequired={function() { navigate('/', { state: { auth: 'login' } }); }} />
-              );
+              if (category === 'image') {
+                return <ImageTool model={active} balance={balance} onBalanceChange={setBalance} onLoginRequired={function() { navigate('/', { state: { auth: 'login' } }); }} />;
+              }
+              return <VideoTool model={active} balance={balance} onBalanceChange={setBalance} onLoginRequired={function() { navigate('/', { state: { auth: 'login' } }); }} />;
             })() : (
             <div className="mb-8">
               <ChatComposer

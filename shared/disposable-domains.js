@@ -157,7 +157,7 @@ export const DISPOSABLE_DOMAINS = new Set([
   'sneakermail.com',
   'sneakermail.net',
   'sneakermail.org',
-  'sohu.com',  // common source of disposable relay accounts
+  'sohu.com',
   'spam.care',
   'spam.la',
   'spam.su',

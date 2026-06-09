@@ -216,26 +216,6 @@ db.exec(`
   );
 `);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS analytics_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    visitor_id TEXT NOT NULL DEFAULT '',
-    session_id TEXT,
-    user_id INTEGER,
-    event_type TEXT NOT NULL,
-    path TEXT NOT NULL DEFAULT '/',
-    referrer TEXT,
-    element TEXT,
-    text TEXT,
-    x REAL,
-    y REAL,
-    scroll_y REAL,
-    viewport_w INTEGER,
-    viewport_h INTEGER,
-    metadata TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS referrals (
@@ -247,17 +227,6 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (referrer_user_id) REFERENCES users(id),
     FOREIGN KEY (referred_user_id) REFERENCES users(id)
-  );
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS analytics_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    report_type TEXT NOT NULL,
-    period_start TEXT,
-    period_end TEXT,
-    summary_json TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
   );
 `);
 
@@ -276,7 +245,6 @@ try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON user
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id)'); } catch { /* exists */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)'); } catch { /* exists */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_support_conversations_user ON support_conversations(user_id)'); } catch { /* exists */ }
-try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at)'); } catch { /* exists */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id)'); } catch { /* exists */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_model ON messages(model_id)'); } catch { /* exists */ }
 
@@ -307,18 +275,6 @@ try { db.exec('ALTER TABLE users ADD COLUMN subscription_end_date TEXT'); } catc
 
 // Add video_meta column to models table
 try { db.exec('ALTER TABLE models ADD COLUMN video_meta TEXT'); } catch { /* exists */ }
-
-// Add missing columns to analytics_events
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN visitor_id TEXT'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN user_id INTEGER'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN element TEXT'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN text TEXT'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN metadata TEXT'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN x REAL'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN y REAL'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN scroll_y REAL'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN viewport_w REAL'); } catch { /* exists */ }
-try { db.exec('ALTER TABLE analytics_events ADD COLUMN viewport_h REAL'); } catch { /* exists */ }
 
 // Add banned column for user blocking
 try { db.exec('ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0'); } catch { /* exists */ }

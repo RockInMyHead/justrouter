@@ -64,10 +64,7 @@ rsync -avz --delete \
   --include 'server' \
   --include 'shared' \
   --include 'scripts' \
-  --include 'scripts/openclaw-report-worker.mjs' \
-  --include 'scripts/openclaw-report-now.mjs' \
   --include 'deploy' \
-  --include 'deploy/openclaw.ecosystem.config.cjs' \
   --include 'package.json' \
   --include 'package-lock.json' \
   --rsh="$RSYNC_RSH" \
@@ -99,18 +96,13 @@ eval $SSH_CMD "$SERVER" bash -s << 'REMOTE'
     cp server/velorix.db "server/backups/velorix.db.$(date +%Y%m%d-%H%M%S).bak"
   fi
 
-  # Restart via PM2 ecosystem (manages justrouter + openclaw-worker)
+  # Restart via PM2
   if command -v pm2 &>/dev/null; then
-    if [ -f deploy/openclaw.ecosystem.config.cjs ]; then
-      pm2 startOrReload deploy/openclaw.ecosystem.config.cjs --update-env
-    else
-      pm2 restart justrouter || pm2 start server/index.js --name justrouter
-    fi
+    pm2 restart justrouter || pm2 start server/index.js --name justrouter
     pm2 save
   else
     echo "⚠️  pm2 not found. Restart manually:"
     echo "   node server/index.js"
-    echo "   node scripts/openclaw-report-worker.mjs"
   fi
 
   echo ""

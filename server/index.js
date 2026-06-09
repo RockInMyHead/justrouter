@@ -69,39 +69,6 @@ import {
   creditReferralForTopup,
 } from './referrals.js';
 import { renderSeoHtml } from './seo-html.js';
-import {
-  processAgentMessage,
-  generateCeoReport,
-  clearConversation,
-  listActiveConversations,
-  ADMIN_SYSTEM_PROMPT,
-  OPENCLAW_SYSTEM_PROMPT,
-} from './justrouter-agent.js';
-import {
-  getAnalyticsSummary,
-  getHeatmapData,
-  getScrollDepthData,
-  getMouseHeatmapData,
-  getRageClickData,
-  getSessionAnalytics,
-  recordAnalyticsEvent,
-  recordFunnelEvent,
-  storeAnalyticsReport,
-} from './openclaw-analytics.js';
-import {
-  generateAndStoreOpenClawReport,
-  getLatestOpenClawReport,
-} from './openclaw-reports.js';
-import {
-  formatOpenClawTelegramReport,
-  broadcastOpenClawReportToAdmins,
-} from './openclaw-telegram.js';
-import {
-  buildOpenClawActionPlan,
-  buildOpenClawAgentMessage,
-  buildOpenClawContext,
-  shouldAttachOpenClawContext,
-} from './openclaw-agent.js';
 import { isDisposableEmail } from '../shared/disposable-domains.js';
 import { getSiteById } from './site-catalog.js';
 import { syncBlogPostsFromDb } from '../shared/blog-posts.js';
@@ -181,10 +148,9 @@ const TELEGRAM_WEBHOOK_URL = process.env.TELEGRAM_WEBHOOK_URL || `${process.env.
 const TELEGRAM_PAYMENT_PROVIDER_TOKEN = process.env.TELEGRAM_PAYMENT_PROVIDER_TOKEN;
 const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD || 100);
-const JUSTROUTER_AGENT_ENABLED = process.env.JUSTROUTER_AGENT_ENABLED !== 'false';
-const JUSTROUTER_CEO_CHAT_ID = process.env.JUSTROUTER_CEO_CHAT_ID;
 const JUSTROUTER_ADMIN_CHAT_ID = process.env.JUSTROUTER_ADMIN_CHAT_ID;
 const EMAIL_CODE_TTL_MINUTES = Number(process.env.EMAIL_CODE_TTL_MINUTES || 15);
+const EMAIL_FROM = process.env.EMAIL_FROM || process.env.SMTP_USER || "noreply@justrouter.ru";
 const YOOKASSA_SHOP_ID = process.env.YOOKASSA_SHOP_ID;
 const YOOKASSA_SECRET_KEY = process.env.YOOKASSA_SECRET_KEY;
 const YOOKASSA_RETURN_URL = process.env.YOOKASSA_RETURN_URL || 'https://justrouter.ru/account';
@@ -242,9 +208,9 @@ function queueVerificationEmail(email, code) {
   });
 }
 
-async function sendVerificationEmailWithTimeout(email, code, timeoutMs = 12_000) {
+async function sendVerificationEmailWithTimeout(email, code, mode, timeoutMs = 12_000) {
   let timeoutId;
-  const sendTask = sendVerificationEmail(email, code);
+  const sendTask = sendVerificationEmail(email, code, mode);
   const timeoutTask = new Promise((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error('SMTP timeout')), timeoutMs);
   });
@@ -263,19 +229,19 @@ async function sendVerificationEmailWithTimeout(email, code, timeoutMs = 12_000)
   }
 }
 
-async function sendVerificationEmail(email, code) {
+async function sendVerificationEmail(email, code, mode) {
   if (!mailTransporter) {
     throw new Error('SMTP не настроен');
   }
 
   const fromAddress = process.env.MAIL_FROM || process.env.SMTP_USER;
-  const previewText = `Код подтверждения JustRouter: ${code}`;
+  const previewText = mode === 'reset' ? `Код восстановления пароля JustRouter: ${code}` : `Код подтверждения JustRouter: ${code}`;
   const info = await mailTransporter.sendMail({
     from: `"JustRouter" <${fromAddress}>`,
     to: email,
-    subject: 'Код подтверждения JustRouter',
+    subject: mode === 'reset' ? 'Восстановление пароля JustRouter' : 'Код подтверждения JustRouter',
     priority: 'high',
-    text: `Ваш код подтверждения JustRouter: ${code}\n\nКод действует ${EMAIL_CODE_TTL_MINUTES} минут.\n\nЕсли вы не регистрировались — проигнорируйте письмо.`,
+    text: mode === 'reset' ? `Ваш код для восстановления пароля JustRouter: ${code}\n\nКод действует ${EMAIL_CODE_TTL_MINUTES} минут.\n\nЕсли вы не запрашивали сброс пароля — проигнорируйте письмо.` : `Ваш код подтверждения JustRouter: ${code}\n\nКод действует ${EMAIL_CODE_TTL_MINUTES} минут.\n\nЕсли вы не регистрировались — проигнорируйте письмо.`,
     html: `
       <!doctype html>
       <html lang="ru">
@@ -283,16 +249,16 @@ async function sendVerificationEmail(email, code) {
           <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${previewText}</div>
           <div style="max-width:520px;margin:0 auto;background:#3a3a3a;border:1px solid rgba(247,241,232,0.14);border-radius:24px;padding:28px;">
             <div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:rgba(247,241,232,.55);margin-bottom:10px;">JustRouter</div>
-            <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2;color:#f7f1e8;">Подтверждение email</h1>
+            <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2;color:#f7f1e8;">${mode === 'reset' ? 'Восстановление пароля' : 'Подтверждение email'}</h1>
             <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:rgba(247,241,232,.72);">
-              Введите код на странице регистрации, чтобы завершить создание аккаунта.
+              ${mode === 'reset' ? 'Введите код на странице, чтобы восстановить доступ к аккаунту.' : 'Введите код на странице регистрации, чтобы завершить создание аккаунта.'}
             </p>
             <div style="padding:20px;border-radius:18px;background:#f7f1e8;text-align:center;">
               <div style="font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#6f6f6f;margin-bottom:8px;">Код</div>
               <div style="font-family:Consolas,monospace;font-size:36px;font-weight:800;letter-spacing:.28em;color:#4f4f4f;">${code}</div>
                               </div>
             <p style="margin:18px 0 0;font-size:13px;line-height:1.6;color:rgba(247,241,232,.55);">
-              Код действует ${EMAIL_CODE_TTL_MINUTES} минут. Если вы не регистрировались — просто проигнорируйте письмо.
+              ${mode === 'reset' ? `Код действует ${EMAIL_CODE_TTL_MINUTES} минут. Если вы не запрашивали сброс — просто проигнорируйте письмо.` : `Код действует ${EMAIL_CODE_TTL_MINUTES} минут. Если вы не регистрировались — просто проигнорируйте письмо.`}
             </p>
           </div>
         </body>
@@ -396,7 +362,7 @@ app.post('/api/auth/register', authRateLimit, requireJsonFields(['email', 'passw
 
     let emailSent = false;
     try {
-      emailSent = await sendVerificationEmailWithTimeout(normalizedEmail, code);
+      emailSent = await sendVerificationEmailWithTimeout(normalizedEmail, code, null);
     } catch (e) {
       console.error('[auth] email error during register:', e.message);
       queueVerificationEmail(normalizedEmail, code);
@@ -407,21 +373,7 @@ app.post('/api/auth/register', authRateLimit, requireJsonFields(['email', 'passw
     }
 
     console.log(`[auth] verification code sent to ${normalizedEmail}`);
-    try {
-      recordAnalyticsEvent(db, {
-        visitor_id: `server:register:${Buffer.from(normalizedEmail).toString('base64').slice(0, 20)}`,
-        event_type: 'funnel',
-        path: '/api/auth/register',
-        text: 'registration_code_sent',
-        metadata: JSON.stringify({ step: 'registration_code_sent', email_domain: normalizedEmail.split('@')[1], has_referral: !!normalizedReferralCode }),
-      });
-    } catch (e) { /* analytics best-effort */ }
-
-    res.json({
-      message: emailSent ? 'Код отправлен на почту' : 'Код отправляется — письмо может прийти в течение 1–2 минут',
-      email: normalizedEmail,
-      email_sent: emailSent,
-    });
+    return res.json({ ok: true, message: 'Код отправлен на почту. Проверьте папку «Спам».' });
   } catch (e) {
     console.error('[auth] register failed', { email, error: e.message });
     res.status(500).json({ error: 'Не удалось создать пользователя. Попробуйте ещё раз.' });
@@ -464,7 +416,7 @@ app.post('/api/auth/resend-verification', authRateLimit, requireJsonFields(['ema
   `).run(newCode, expiresAt, verification.id);
 
   try {
-    const sentNow = await sendVerificationEmailWithTimeout(email, newCode);
+    const sentNow = await sendVerificationEmailWithTimeout(email, newCode, null);
     res.json({
       message: sentNow ? 'Код отправлен повторно' : 'Код отправляется — письмо может прийти в течение 1–2 минут',
       email_sent: sentNow,
@@ -475,6 +427,80 @@ app.post('/api/auth/resend-verification', authRateLimit, requireJsonFields(['ema
     res.status(503).json({ error: 'Не удалось отправить код. Попробуйте ещё раз через минуту.' });
   }
 });
+
+// POST /api/auth/forgot-password — send reset code
+app.post('/api/auth/forgot-password', authRateLimit, requireJsonFields(['email']), async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  if (!email) return res.status(400).json({ error: 'Введите email' });
+
+  const user = db.prepare('SELECT id, name, email FROM users WHERE email = ?').get(email);
+  if (!user) {
+    return res.json({ ok: true, message: 'Если такой email зарегистрирован, код будет отправлен.' });
+  }
+
+  const code = String(crypto.randomInt(100000, 1000000));
+  const expiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MINUTES * 60 * 1000).toISOString();
+
+  db.prepare('DELETE FROM email_verification_codes WHERE email = ? AND used_at IS NULL').run(email);
+  db.prepare("INSERT INTO email_verification_codes (email, code, password_hash, expires_at) VALUES (?, ?, '" + "__reset__" + "', ?)").run(email, code, expiresAt);
+
+  let emailSent = false;
+  try {
+    emailSent = await sendVerificationEmailWithTimeout(email, code, 'reset');
+  } catch (e) {
+    console.error('[auth] forgot-password email error:', e.message);
+    queueVerificationEmail(email, code);
+  }
+
+  if (!emailSent && !mailTransporter) {
+    return res.status(503).json({ error: 'Почта для отправки кодов не настроена' });
+  }
+
+  console.log('[auth] password reset code sent to', email);
+  return res.json({ ok: true, message: 'Код отправлен на почту. Проверьте папку «Спам».' });
+});
+
+// POST /api/auth/reset-password — verify code and update password
+app.post('/api/auth/reset-password', authRateLimit, requireJsonFields(['email', 'code', 'password']), async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const code = String(req.body.code || '').trim();
+  const password = req.body.password;
+
+  if (!email || !code || !password) return res.status(400).json({ error: 'Заполните все поля' });
+  if (password.length < 6) return res.status(400).json({ error: 'Пароль должен быть минимум 6 символов' });
+
+  const verification = db.prepare('SELECT * FROM email_verification_codes WHERE email = ? AND code = ? AND used_at IS NULL').get(email, code);
+
+  if (!verification) {
+    return res.status(400).json({ error: 'Неверный код' });
+  }
+  if (new Date(verification.expires_at).getTime() < Date.now()) {
+    return res.status(400).json({ error: 'Код истёк. Запросите новый.' });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  db.prepare('UPDATE users SET password_hash = ? WHERE email = ?').run(hashedPassword, email);
+  db.prepare("UPDATE email_verification_codes SET used_at = datetime('now') WHERE id = ?").run(verification.id);
+
+  console.log('[auth] password reset for', email);
+  return res.json({ ok: true, message: 'Пароль успешно изменён. Войдите с новым паролем.' });
+});
+
+
+function notifyAdmin(text) {
+  const ADMIN_CHAT_ID = JUSTROUTER_ADMIN_CHAT_ID || '1051395584';
+  if (!TELEGRAM_BOT_TOKEN) return;
+  fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: ADMIN_CHAT_ID,
+      text: text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    }),
+  }).catch(err => console.error('[notifyAdmin] failed:', err.message));
+}
 
 app.post('/api/auth/verify-email', authRateLimit, requireJsonFields(['email', 'code']), (req, res) => {
   const ip = req.ip || req.connection.remoteAddress;
@@ -545,7 +571,11 @@ app.post('/api/auth/verify-email', authRateLimit, requireJsonFields(['email', 'c
     });
 
     const userId = tx();
-    try { recordFunnelEvent(db, 'registration_complete', userId, { email_domain: email.split('@')[1], has_referral: !!verification.referral_code }); } catch (e) { /* analytics best-effort */ }
+
+    // Notify admin about new registration
+    try {
+      notifyAdmin('🆕 <b>Новая регистрация</b>\nИмя: ' + (verification.name || '—') + '\nEmail: ' + email + '\nРеферальный код: ' + (verification.referral_code || '—'));
+    } catch (e) {}
 
     const user = toPublicUser(db, {
       id: userId,
@@ -1230,15 +1260,12 @@ app.post('/api/yookassa/webhook', (req, res) => {
           // Also record a topup transaction so subscription revenue is counted in financial analytics
           db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('topup', ?, ?, ?)")
             .run(existing.user_id, paidAmount, `Подписка ЮKassa: ${payment.id}`);
-          try { recordFunnelEvent(db, 'subscription_complete', existing.user_id, { amount: paidAmount, subscription_id: existing.subscription_id }); } catch (e) { /* analytics best-effort */ }
         } else {
           // Regular topup — add to balance + bonus ladder (20% bonus)
           const bonusAmount = Math.floor(paidAmount * 0.2);
           db.prepare('UPDATE users SET balance = balance + ?, bonus_balance = COALESCE(bonus_balance, 0) + ? WHERE id = ?')
             .run(paidAmount, bonusAmount, existing.user_id);
           db.prepare("INSERT INTO transactions (type, user_id, amount, description) VALUES ('topup', ?, ?, ?)")
-            .run(existing.user_id, paidAmount, `Пополнение ЮKassa: ${payment.id}${bonusAmount > 0 ? ` (+${bonusAmount} ₽ бонус)` : ''}`);
-          try { recordFunnelEvent(db, 'topup_complete', existing.user_id, { amount: paidAmount }); } catch (e) { /* analytics best-effort */ }
         }
       });
       tx();
@@ -1246,7 +1273,15 @@ app.post('/api/yookassa/webhook', (req, res) => {
       if (!existing.subscription_id) {
         creditReferralForTopup(db, existing.user_id);
       }
-      console.log('[yookassa] payment succeeded', { payment_id: payment.id, user_id: existing.user_id, amount: paidAmount });
+        // Notify admin about topup
+    try {
+      const user = db.prepare('SELECT name, email FROM users WHERE id = ?').get(existing.user_id);
+      const name = user?.name || '—';
+      const email = user?.email || '—';
+      notifyAdmin('💰 <b>Пополнение</b>\nСумма: ' + paidAmount + ' ₽\nИмя: ' + name + '\nEmail: ' + email + '\nМетод: ' + (existing.subscription_id ? 'Подписка' : 'Баланс'));
+    } catch (e) {}
+
+    console.log('[yookassa] payment succeeded', { payment_id: payment.id, user_id: existing.user_id, amount: paidAmount });
     }
   } else if (event === 'payment.canceled' || payment.status === 'canceled') {
     db.prepare('UPDATE yookassa_payments SET status = ?, raw_payload = ? WHERE id = ?')
@@ -1367,25 +1402,9 @@ async function telegramApi(method, payload) {
 }
 
 async function ensureTelegramWebhook() {
-  if (!TELEGRAM_BOT_TOKEN) {
-    console.warn('[telegram] skipping webhook setup because TELEGRAM_BOT_TOKEN is missing');
-    return;
-  }
-
-  const payload = {
-    url: TELEGRAM_WEBHOOK_URL,
-    drop_pending_updates: false,
-  };
-
-  if (TELEGRAM_WEBHOOK_SECRET) {
-    payload.secret_token = TELEGRAM_WEBHOOK_SECRET;
-  }
-
-  const data = await telegramApi('setWebhook', payload);
-  if (data?.ok) {
-    console.log(`[telegram] webhook ready: ${TELEGRAM_WEBHOOK_URL}`);
-  } else {
-    console.error('[telegram] webhook setup failed', data);
+  // Webhook disabled — OpenClaw handles Telegram via polling
+  if (TELEGRAM_BOT_TOKEN) {
+    console.log('[telegram] skipping webhook setup (OpenClaw handles polling)');
   }
 }
 
@@ -1421,37 +1440,6 @@ async function sendTelegramLongMessage(chatId, text, options = {}) {
   for (let i = 0; i < value.length; i += maxLen) {
     await sendTelegramMessage(chatId, value.substring(i, i + maxLen), options);
   }
-}
-
-function formatAgentTrace(trace = [], { limit = 12 } = {}) {
-  const items = (trace || []).slice(0, limit);
-  if (!items.length) return '';
-  return [
-    '<b>Журнал выполнения</b>',
-    ...items.map((item, index) => {
-      const label = String(item.label || item.type || 'step');
-      const detail = String(item.detail || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      return `${index + 1}. ${label}${detail ? `\n   <code>${detail.slice(0, 700)}</code>` : ''}`;
-    }),
-  ].join('\n');
-}
-
-function formatOpenClawBootLog(context, actionPlan = []) {
-  const metrics = context?.signals?.metrics || {};
-  const issues = context?.signals?.issues || [];
-  const topAction = actionPlan[0]?.next_step || actionPlan[0]?.title || 'нет срочных действий';
-  return [
-    '<b>OpenClaw включён напрямую</b>',
-    '1. Открыл analytics summary за 24h.',
-    `2. Выбрал страницу анализа: <code>${context?.analyzed_path || '/'}</code>.`,
-    '3. Проверил heatmap: click points, mouse points, scroll depth, rage clicks.',
-    '4. Проверил sessions и funnel steps.',
-    '5. Поднял OpenClaw action plan.',
-    '',
-    `<b>Снимок</b>: pageviews=${metrics.pageviews ?? 0}, clicks=${metrics.clicks ?? 0}, click_rate=${metrics.click_rate_percent ?? '—'}%, rage=${metrics.rage_clicks ?? 0}, health=${context?.signals?.health || 'unknown'}`,
-    `<b>Проблем</b>: ${issues.length}`,
-    `<b>Следующее действие</b>: ${topAction}`,
-  ].join('\n');
 }
 
 async function sendTelegramInvoice(chatId, userId, amount) {
@@ -1498,6 +1486,42 @@ async function maybeNotifyLowBalance(userId, balance) {
 
   if (links.length > 0) {
     db.prepare('UPDATE telegram_links SET low_balance_notified = 1, updated_at = datetime(\'now\') WHERE user_id = ?').run(userId);
+  }
+
+  // Email-дожим при низком балансе
+  if (links.length === 0) {
+    const user = db.prepare('SELECT email, name, low_balance_email_notified FROM users WHERE id = ?').get(userId);
+    if (user && user.email && user.email.includes('@') && !user.low_balance_email_notified) {
+      try {
+        const siteUrl = process.env.SITE_URL || 'https://justrouter.ru';
+        await new Promise((resolve, reject) => {
+          mailTransporter.sendMail({
+            from: '"JustRouter" <' + EMAIL_FROM + '>',
+            to: user.email,
+            subject: 'Баланс на исходе — продолжите работу с JustRouter',
+            html: '<div style="max-width:480px;margin:0 auto;font-family:Arial,sans-serif;">'
+              + '<h2 style="color:#10b981;">Баланс почти закончился \u{1FA99}</h2>'
+              + '<p style="color:#555;font-size:14px;line-height:1.6;">'
+              + 'Здравствуйте' + (user.name ? ', ' + user.name : '') + '!<br><br>'
+              + 'Ваш баланс в JustRouter — <strong>' + formatRub(balance) + '</strong>.<br>'
+              + 'Когда он закончится, доступ к моделям приостановится.'
+              + '</p>'
+              + '<div style="text-align:center;margin:24px 0;">'
+              + '<a href="' + siteUrl + '/account" style="display:inline-block;padding:12px 28px;background:#10b981;color:#000;text-decoration:none;border-radius:8px;font-weight:600;">'
+              + '\u{1F4B0} Пополнить баланс</a>'
+              + '</div>'
+              + '<p style="color:#999;font-size:12px;">Или напишите нам: <a href="mailto:support@justrouter.ru" style="color:#10b981;">support@justrouter.ru</a></p>'
+              + '</div>',
+          }, (err, info) => {
+            if (err) reject(err); else resolve(info);
+          });
+        });
+        console.log('[email] low balance notified', { userId, email: user.email, balance });
+        db.prepare('UPDATE users SET low_balance_email_notified = 1 WHERE id = ?').run(userId);
+      } catch (e) {
+        console.error('[email] low balance notify failed', { userId, error: e.message });
+      }
+    }
   }
 }
 
@@ -1564,79 +1588,7 @@ async function answerTelegramUpdate(update) {
 
   const linkedUser = getUserByTelegramId(chatId);
 
-  if (text.startsWith('/openclaw')) {
-    if (!linkedUser || !linkedUser.is_admin) {
-      await sendTelegramMessage(chatId, 'OpenClaw-команды доступны только администратору после привязки аккаунта.', { reply_markup: buildMainKeyboard(Boolean(linkedUser)) });
-      return;
-    }
-
-    const parts = text.split(/\s+/).filter(Boolean);
-    const normalized = (parts[1] || '').toLowerCase();
-    if (!normalized || normalized === 'report' || normalized === 'now') {
-      const report = generateAndStoreOpenClawReport(db, { hours: 12, path: '/' });
-      await sendTelegramMessage(chatId, formatOpenClawTelegramReport({ report_type: 'openclaw_12h', summary: report, created_at: report.generated_at }), { reply_markup: buildMainKeyboard(true) });
-      return;
-    }
-
-    if (normalized === 'latest') {
-      const latest = getLatestOpenClawReport(db, 'openclaw_12h');
-      await sendTelegramMessage(
-        chatId,
-        formatOpenClawTelegramReport(latest || { report_type: 'openclaw_12h', summary: { total_events: 0, unique_visitors: 0, hours: 12, path: '/' } }),
-        { reply_markup: buildMainKeyboard(true) },
-      );
-      return;
-    }
-
-    if (normalized === 'heatmap') {
-      const pathArg = parts.slice(2).join(' ').trim() || '/';
-      const points = getHeatmapData(db, { path: pathArg, hours: 24, gridSize: 24 }).slice(0, 8);
-      const lines = [
-        '<b>OpenClaw heatmap</b>',
-        `Path: <code>${pathArg}</code>`,
-        '',
-      ];
-      if (points.length === 0) {
-        lines.push('Пока нет данных по кликам.');
-      } else {
-        for (const point of points) {
-          lines.push(`• ${point.x}, ${point.y} — ${point.count}`);
-        }
-      }
-      await sendTelegramMessage(chatId, lines.join('\n'), { reply_markup: buildMainKeyboard(true) });
-      return;
-    }
-
-    const openClawMessage = parts.slice(1).join(' ').trim();
-    if (openClawMessage) {
-      await sendTelegramMessage(chatId, 'OpenClaw: собираю live-контекст, heatmap, funnel и память...', { reply_markup: buildMainKeyboard(true) });
-      const context = buildOpenClawContext(db, { hours: 24, path: '', includeProject: true });
-      const actionPlan = buildOpenClawActionPlan(context);
-      await sendTelegramLongMessage(chatId, formatOpenClawBootLog(context, actionPlan), { reply_markup: buildMainKeyboard(true) });
-      const result = await processAgentMessage({
-        userId: `tg_openclaw_${chatId}`,
-        text: buildOpenClawAgentMessage(openClawMessage, context),
-        db,
-        apiKey: OPENROUTER_API_KEY,
-        dispatcher: openRouterDispatcher,
-        systemPrompt: OPENCLAW_SYSTEM_PROMPT,
-        maxRounds: 18,
-      });
-      const traceText = formatAgentTrace(result.trace);
-      if (traceText) await sendTelegramLongMessage(chatId, traceText, { reply_markup: buildMainKeyboard(true) });
-      await sendTelegramLongMessage(chatId, result.response, { parse_mode: 'HTML', reply_markup: buildMainKeyboard(true) });
-      return;
-    }
-
-    await sendTelegramMessage(
-      chatId,
-      'Команды OpenClaw: /openclaw report, /openclaw latest, /openclaw heatmap /path, /openclaw <вопрос>. Обычные сообщения админа в Telegram тоже идут сразу в OpenClaw.',
-      { reply_markup: buildMainKeyboard(true) },
-    );
-    return;
-  }
-
-  if (text.startsWith('/start')) {
+  if (text === '/start') {
     const [, startParam] = text.split(/\s+/, 2);
     if (startParam) {
       await connectTelegramCode(chatId, telegramUser, startParam);
@@ -1739,98 +1691,6 @@ async function answerTelegramUpdate(update) {
     await sendTelegramMessage(chatId, 'Рекламные и продуктовые уведомления отключены.');
     return;
   }
-
-  // ── JustRouter AI Agent ──
-  if (JUSTROUTER_AGENT_ENABLED && linkedUser && linkedUser.is_admin) {
-    // /agent <message> — send message to AI agent
-    if (text.startsWith('/agent ')) {
-      const agentMessage = text.slice('/agent '.length).trim();
-      if (!agentMessage) {
-        await sendTelegramMessage(chatId, 'Напишите сообщение после /agent, например: /agent покажи список пользователей');
-        return;
-      }
-
-      await sendTelegramMessage(chatId, 'AI Admin: запускаю инструменты и собираю журнал выполнения...', { reply_markup: buildMainKeyboard(true) });
-
-      try {
-        const result = await processAgentMessage({
-          userId: `tg_admin_${chatId}`,
-          text: agentMessage,
-          db,
-          apiKey: OPENROUTER_API_KEY,
-          dispatcher: openRouterDispatcher,
-          sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { parse_mode: 'HTML' }),
-        });
-
-        const traceText = formatAgentTrace(result.trace);
-        if (traceText) await sendTelegramLongMessage(chatId, traceText, { parse_mode: 'HTML' });
-        await sendTelegramLongMessage(chatId, result.response, { parse_mode: 'HTML' });
-      } catch (e) {
-        console.error('[agent] error:', e.message);
-        await sendTelegramMessage(chatId, `Ошибка: ${e.message}`);
-      }
-      return;
-    }
-
-    // /clear — reset conversation history
-    if (text === '/clear' || text.toLowerCase() === 'очистить') {
-      clearConversation(`tg_admin_${chatId}`);
-      clearConversation(`tg_openclaw_${chatId}`);
-      await sendTelegramMessage(chatId, 'История Telegram-диалога с OpenClaw и универсальным AI-агентом очищена. Начинаем с чистого листа.');
-      return;
-    }
-
-    // Any other admin message → route directly to OpenClaw.
-    if (text.startsWith('/balance') || text.startsWith('/key') || text.startsWith('/topup')
-        || text.startsWith('/ads_') || text.startsWith('/start') || text.startsWith('/connect')
-        || text.startsWith('/openclaw') || text.startsWith('/clear') || text.startsWith('/agent')) {
-      // These are handled above, skip
-    } else {
-      await sendTelegramMessage(chatId, 'OpenClaw: собираю live-контекст, heatmap, funnel и память...', { reply_markup: buildMainKeyboard(true) });
-
-      try {
-        const context = buildOpenClawContext(db, { hours: 24, path: '', includeProject: true });
-        const actionPlan = buildOpenClawActionPlan(context);
-        await sendTelegramLongMessage(chatId, formatOpenClawBootLog(context, actionPlan), { reply_markup: buildMainKeyboard(true) });
-        const result = await processAgentMessage({
-          userId: `tg_openclaw_${chatId}`,
-          text: buildOpenClawAgentMessage(text, context),
-          db,
-          apiKey: OPENROUTER_API_KEY,
-          dispatcher: openRouterDispatcher,
-          sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { parse_mode: 'HTML' }),
-          systemPrompt: OPENCLAW_SYSTEM_PROMPT,
-          maxRounds: 18,
-        });
-
-        const traceText = formatAgentTrace(result.trace);
-        if (traceText) await sendTelegramLongMessage(chatId, traceText, { parse_mode: 'HTML', reply_markup: buildMainKeyboard(true) });
-        await sendTelegramLongMessage(chatId, result.response, { parse_mode: 'HTML', reply_markup: buildMainKeyboard(true) });
-      } catch (e) {
-        console.error('[openclaw] telegram error:', e.message);
-        await sendTelegramMessage(chatId, `Ошибка: ${e.message}`);
-      }
-      return;
-    }
-  }
-
-  await sendTelegramMessage(
-    chatId,
-    'Команды: /balance, /key, /topup 500, /ads_on, /ads_off.',
-    { reply_markup: buildMainKeyboard(true) }
-  );
-}
-
-async function connectTelegramCode(chatId, telegramUser, code) {
-  if (!code) {
-    await sendTelegramMessage(chatId, 'Отправьте код так: /connect 123456');
-    return;
-  }
-
-  const linkCode = db.prepare(`
-    SELECT * FROM telegram_link_codes
-    WHERE code = ? AND used_at IS NULL AND expires_at > datetime('now')
-  `).get(code.trim());
 
   if (!linkCode) {
     await sendTelegramMessage(chatId, 'Код не найден или истек. Получите новый код в личном кабинете JustRouter.');
@@ -2882,33 +2742,6 @@ function adminMiddleware(req, res, next) {
   next();
 }
 
-// ── Analytics ingest for OpenClaw ──
-app.post('/api/analytics/events', publicWriteRateLimit, (req, res) => {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  if (!rateLimit(`analytics_events:${ip}`, 120, 60000)) {
-    return res.status(429).json({ error: 'Слишком много событий, попробуйте позже' });
-  }
-
-  const body = req.body || {};
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  let userId = null;
-  if (token) {
-    const session = db.prepare('SELECT user_id FROM sessions WHERE token = ?').get(token);
-    if (session) userId = session.user_id;
-  }
-
-  const id = recordAnalyticsEvent(db, {
-    ...body,
-    user_id: body.user_id ?? userId,
-    referrer: body.referrer || req.get('referer') || req.get('referrer') || '',
-  });
-
-  if (!id) {
-    return res.status(400).json({ error: 'Некорректное событие' });
-  }
-
-  res.json({ ok: true, id });
-});
 
 // ── Admin: Overview stats ──
 app.get('/api/admin/overview', adminMiddleware, (req, res) => {
@@ -3267,7 +3100,6 @@ function deleteAllUserData(dbConn, userId) {
   dbConn.prepare('DELETE FROM telegram_payments WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM telegram_link_codes WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM telegram_links WHERE user_id = ?').run(userId);
-  dbConn.prepare('DELETE FROM analytics_events WHERE user_id = ?').run(userId);
   const agentIds = dbConn.prepare('SELECT id FROM agents WHERE owner_user_id = ?').all(userId).map(r => r.id);
   for (const aid of agentIds) {
     dbConn.prepare('DELETE FROM agent_sessions WHERE agent_id = ?').run(aid);
@@ -3569,244 +3401,6 @@ app.get('/api/admin/provider-stats', adminMiddleware, (req, res) => {
   }));
 
   res.json({ providers: enriched, total_messages: totalMessages });
-});
-
-// ── Admin: OpenClaw analytics ──
-app.get('/api/admin/analytics/summary', adminMiddleware, (req, res) => {
-  const hours = Number(req.query.hours || 12);
-  const path = String(req.query.path || '');
-  res.json(getAnalyticsSummary(db, { hours, path }));
-});
-
-app.get('/api/admin/analytics/heatmap', adminMiddleware, (req, res) => {
-  const hours = Number(req.query.hours || 24);
-  const path = String(req.query.path || '/');
-  const gridSize = Number(req.query.grid_size || 24);
-  const viewport = String(req.query.viewport || '');
-  res.json({
-    path,
-    hours,
-    grid_size: gridSize,
-    viewport,
-    points: getHeatmapData(db, { path, hours, gridSize, viewport }),
-  });
-});
-
-app.get('/api/admin/analytics/scroll-depth', adminMiddleware, (req, res) => {
-  const hours = Number(req.query.hours || 24);
-  const path = String(req.query.path || '');
-  res.json({ hours, path, buckets: getScrollDepthData(db, { hours, path }) });
-});
-
-app.get('/api/admin/analytics/mouse-heatmap', adminMiddleware, (req, res) => {
-  const hours = Number(req.query.hours || 24);
-  const path = String(req.query.path || '');
-  const gridSize = Number(req.query.grid_size || 32);
-  const viewport = String(req.query.viewport || '');
-  res.json({ hours, path, grid_size: gridSize, viewport, points: getMouseHeatmapData(db, { hours, path, gridSize, viewport }) });
-});
-
-app.get('/api/admin/analytics/rage-clicks', adminMiddleware, (req, res) => {
-  const hours = Number(req.query.hours || 24);
-  const path = String(req.query.path || '');
-  res.json({ hours, path, items: getRageClickData(db, { hours, path }) });
-});
-
-app.get('/api/admin/analytics/sessions', adminMiddleware, (req, res) => {
-  const hours = Number(req.query.hours || 24);
-  res.json({ hours, ...getSessionAnalytics(db, { hours }) });
-});
-
-app.get('/api/admin/analytics/compare', adminMiddleware, (req, res) => {
-  const hours = Number(req.query.hours || 12);
-  const pathsRaw = String(req.query.paths || '/,/models,/pricing,/blog,/demo');
-  const paths = pathsRaw.split(',').map((item) => item.trim()).filter(Boolean).slice(0, 8);
-
-  const items = paths.map((path) => {
-    const summary = getAnalyticsSummary(db, { hours, path });
-    const heatmapPoints = getHeatmapData(db, { path, hours: Math.max(24, hours), gridSize: 24 });
-    const topHeatPoints = [...heatmapPoints]
-      .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
-      .slice(0, 3);
-
-    return {
-      path,
-      summary,
-      heatmap_points: heatmapPoints,
-      top_heat_points: topHeatPoints,
-    };
-  });
-
-  res.json({
-    hours,
-    paths,
-    items,
-  });
-});
-
-app.post('/api/admin/analytics/reports', adminMiddleware, (req, res) => {
-  const reportType = String(req.body?.report_type || req.body?.type || 'openclaw_12h');
-  const periodStart = String(req.body?.period_start || '');
-  const periodEnd = String(req.body?.period_end || '');
-  const summary = req.body?.summary || req.body?.data || {};
-  const reportId = storeAnalyticsReport(db, { reportType, periodStart, periodEnd, summary });
-  if (!reportId) return res.status(400).json({ error: 'Некорректный отчёт' });
-  res.json({ ok: true, id: reportId });
-});
-
-app.post('/api/admin/analytics/reports/generate', adminMiddleware, (req, res) => {
-  const hours = Number(req.body?.hours || 12);
-  const path = String(req.body?.path || '/');
-  const report = generateAndStoreOpenClawReport(db, { hours, path });
-  broadcastOpenClawReportToAdmins(db, report).catch((e) => {
-    console.error('[openclaw] telegram broadcast failed', e.message);
-  });
-  res.json({ ok: true, report });
-});
-
-app.get('/api/admin/analytics/reports/latest', adminMiddleware, (req, res) => {
-  const reportType = String(req.query.report_type || 'openclaw_12h');
-  const latest = getLatestOpenClawReport(db, reportType);
-  if (!latest) return res.status(404).json({ error: 'Отчёт не найден' });
-  res.json(latest);
-});
-
-app.get('/api/admin/analytics/reports', adminMiddleware, (req, res) => {
-  const reportType = String(req.query.report_type || 'openclaw_12h');
-  const limit = Math.max(1, Math.min(50, Number(req.query.limit || 20) || 20));
-  const rows = db.prepare(`
-    SELECT *
-    FROM analytics_reports
-    WHERE report_type = ?
-    ORDER BY created_at DESC, id DESC
-    LIMIT ?
-  `).all(reportType, limit).map((row) => {
-    try {
-      return { ...row, summary: JSON.parse(row.summary_json) };
-    } catch {
-      return { ...row, summary: null };
-    }
-  });
-  res.json({ report_type: reportType, reports: rows });
-});
-
-// ── Admin: Funnel analytics ──
-app.get('/api/admin/analytics/funnel', adminMiddleware, (req, res) => {
-  const days = Math.min(365, Math.max(1, Number(req.query.days) || 30));
-  const sinceExpr = `datetime('now', '-${days} days')`;
-
-  // Helper: count distinct visitors for a specific funnel event text
-  function funnelCount(eventText) {
-    const row = db.prepare(`
-      SELECT COUNT(DISTINCT visitor_id) as count
-      FROM analytics_events
-      WHERE event_type = 'funnel' AND text = ?
-        AND created_at >= ${sinceExpr}
-    `).get(eventText);
-    return Number(row?.count || 0);
-  }
-
-  // 1. Unique visitors (any pageview or event)
-  const uniqueVisitors = Number(db.prepare(`
-    SELECT COUNT(DISTINCT visitor_id) as count
-    FROM analytics_events
-    WHERE created_at >= ${sinceExpr}
-  `).get().count);
-
-  // 2. Registration started
-  const regStarted = funnelCount('registration_start');
-
-  // 3. Code sent
-  const codeSent = funnelCount('registration_code_sent');
-
-  // 4. Registration completed (from analytics_events + users table for cross-ref)
-  const regCompleted = Number(db.prepare(`
-    SELECT COUNT(*) as count FROM users
-    WHERE created_at >= ${sinceExpr}
-      AND COALESCE(is_admin, 0) = 0
-  `).get().count);
-  const regCompletedAnalytics = funnelCount('registration_complete');
-
-  // 5. Topup started (from analytics_events)
-  const topupStarted = funnelCount('topup_start') + funnelCount('subscription_start');
-
-  // 6. Topup completed (from yookassa_payments + analytics_events)
-  const topupCompleted = Number(db.prepare(`
-    SELECT COUNT(DISTINCT user_id) as count
-    FROM yookassa_payments
-    WHERE status = 'succeeded'
-      AND created_at >= ${sinceExpr}
-  `).get().count);
-  const topupCompletedAnalytics = funnelCount('topup_complete') + funnelCount('subscription_complete');
-
-  // Source breakdown — get earliest pageview referrer/utm per visitor and classify
-  const sourceBreakdown = db.prepare(`
-    WITH visitor_first_event AS (
-      SELECT visitor_id, MIN(created_at) as first_ts
-      FROM analytics_events
-      WHERE event_type = 'pageview' AND created_at >= ${sinceExpr}
-      GROUP BY visitor_id
-    ),
-    visitor_source AS (
-      SELECT e.visitor_id, e.referrer, e.metadata,
-        CASE
-          WHEN e.metadata LIKE '%utm_source%' THEN 'utm'
-          WHEN e.referrer IS NULL OR e.referrer = '' THEN 'direct'
-          WHEN e.referrer LIKE '%google.%' OR e.referrer LIKE '%yandex.%' OR e.referrer LIKE '%bing.%' OR e.referrer LIKE '%yahoo.%' THEN 'organic'
-          ELSE 'referral'
-        END as source
-      FROM analytics_events e
-      JOIN visitor_first_event v ON v.visitor_id = e.visitor_id AND v.first_ts = e.created_at
-      WHERE e.event_type = 'pageview'
-    )
-    SELECT source, COUNT(*) as count
-    FROM visitor_source
-    GROUP BY source
-    ORDER BY count DESC
-  `).all();
-
-  // Timeline: funnel events per day
-  const timeline = db.prepare(`
-    SELECT strftime('%Y-%m-%d', created_at) as label,
-      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text = 'registration_start' THEN visitor_id END) as reg_started,
-      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text = 'registration_code_sent' THEN visitor_id END) as code_sent,
-      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text = 'registration_complete' THEN visitor_id END) as reg_completed,
-      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text IN ('topup_start','subscription_start') THEN visitor_id END) as payment_started,
-      COUNT(DISTINCT CASE WHEN event_type = 'funnel' AND text IN ('topup_complete','subscription_complete') THEN visitor_id END) as payment_completed
-    FROM analytics_events
-    WHERE event_type = 'funnel'
-      AND created_at >= ${sinceExpr}
-    GROUP BY label
-    ORDER BY label ASC
-  `).all();
-
-  const stages = [
-    { id: 'site_visits', label: 'Посетили сайт', count: uniqueVisitors, pct: 100 },
-    { id: 'registration_start', label: 'Начали регистрацию', count: regStarted, pct: uniqueVisitors > 0 ? Math.round((regStarted / uniqueVisitors) * 10000) / 100 : 0 },
-    { id: 'code_sent', label: 'Код отправлен', count: codeSent, pct: regStarted > 0 ? Math.round((codeSent / regStarted) * 10000) / 100 : 0 },
-    { id: 'registration_complete', label: 'Регистрация завершена', count: regCompleted, pct: codeSent > 0 ? Math.round((regCompleted / codeSent) * 10000) / 100 : 0 },
-    { id: 'topup_start', label: 'Начали оплату', count: topupStarted, pct: regCompleted > 0 ? Math.round((topupStarted / regCompleted) * 10000) / 100 : 0 },
-    { id: 'topup_complete', label: 'Оплата завершена', count: topupCompleted, pct: topupStarted > 0 ? Math.round((topupCompleted / topupStarted) * 10000) / 100 : 0 },
-  ];
-
-  // Overall conversion from visit to payment
-  const overallConversion = uniqueVisitors > 0 ? Math.round((topupCompleted / uniqueVisitors) * 10000) / 100 : 0;
-
-  // Who started topup but didn't complete? (recent 7 days for fresh data)
-  const abandonedPayments = Number(db.prepare(`
-    SELECT COUNT(*) as count
-    FROM yookassa_payments
-    WHERE status = 'pending' AND created_at >= datetime('now', '-7 days')
-  `).get().count);
-
-  res.json({
-    days,
-    stages,
-    overall_conversion_pct: overallConversion,
-    abandoned_payments_7d: abandonedPayments,
-    source_breakdown: sourceBreakdown,
-    timeline,
-  });
 });
 
 // ── Admin: Test provider API key ──
@@ -4155,107 +3749,6 @@ app.post('/api/admin/support/conversations/:id/resume-ai', adminMiddleware, (req
   res.json({ ok: true, handoff_to_human: false });
 });
 
-// ── JustRouter AI Agent API ──────────────────────────────
-
-app.post('/api/admin/agent/chat', adminMiddleware, async (req, res) => {
-  const { message } = req.body;
-  if (!message) return res.status(400).json({ error: 'message обязателен' });
-
-  try {
-    let openClawContext = null;
-    let messageForAgent = message;
-    if (shouldAttachOpenClawContext(message)) {
-      openClawContext = buildOpenClawContext(db, { hours: 24, path: '', includeProject: true });
-      messageForAgent = buildOpenClawAgentMessage(message, openClawContext);
-    }
-    const result = await processAgentMessage({
-      userId: `web_admin_${req.user.id}`,
-      text: messageForAgent,
-      db,
-      apiKey: OPENROUTER_API_KEY,
-      dispatcher: openRouterDispatcher,
-    });
-    res.json(openClawContext ? {
-      ...result,
-      openclaw: {
-        context: openClawContext,
-        action_plan: buildOpenClawActionPlan(openClawContext),
-      },
-    } : result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/admin/agent/openclaw/context', adminMiddleware, (req, res) => {
-  try {
-    const hours = Number(req.query.hours || 24);
-    const path = String(req.query.path || '');
-    const includeProject = String(req.query.include_project || 'false') === 'true';
-    const context = buildOpenClawContext(db, { hours, path, includeProject });
-    res.json({
-      context,
-      action_plan: buildOpenClawActionPlan(context),
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/admin/agent/openclaw/chat', adminMiddleware, async (req, res) => {
-  const { message, hours = 24, path = '' } = req.body || {};
-  if (!message) return res.status(400).json({ error: 'message обязателен' });
-
-  try {
-    const context = buildOpenClawContext(db, { hours, path, includeProject: true });
-    const result = await processAgentMessage({
-      userId: `openclaw_admin_${req.user.id}`,
-      text: buildOpenClawAgentMessage(message, context),
-      db,
-      apiKey: OPENROUTER_API_KEY,
-      dispatcher: openRouterDispatcher,
-      maxRounds: 18,
-    });
-    res.json({
-      ...result,
-      openclaw: {
-        context,
-        action_plan: buildOpenClawActionPlan(context),
-      },
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/admin/agent/ceo-report', adminMiddleware, async (req, res) => {
-  try {
-    const result = await generateCeoReport({
-      db,
-      apiKey: OPENROUTER_API_KEY,
-      dispatcher: openRouterDispatcher,
-      sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg, { parse_mode: 'HTML' }),
-    });
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/admin/agent/conversations', adminMiddleware, (req, res) => {
-  res.json(listActiveConversations());
-});
-
-app.post('/api/admin/agent/clear', adminMiddleware, (req, res) => {
-  const { userId } = req.body;
-  if (userId) {
-    clearConversation(userId);
-    res.json({ ok: true });
-  } else {
-    res.status(400).json({ error: 'userId обязателен' });
-  }
-});
-
 // ── SPA fallback ────────────────────────────────────────
 
 const distPath = join(__dirname, '..', 'dist');
@@ -4268,6 +3761,33 @@ try {
 } catch (e) {
   logger.warn('blog sync failed', { error: e.message });
 }
+
+// POST /api/v1/chat/demo — демо-чат без регистрации (3 запроса с IP)
+const demoIpCounts = new Map();
+
+app.post('/api/v1/chat/demo', async (req, res) => {
+  const { content, model_id } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ error: 'Введите сообщение' });
+
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
+  const count = (demoIpCounts.get(ip) || 0) + 1;
+  if (count > 3) return res.status(429).json({ error: 'Лимит бесплатных запросов исчерпан. Зарегистрируйтесь, чтобы продолжить.' });
+  demoIpCounts.set(ip, count);
+
+  const model = db.prepare('SELECT * FROM models WHERE id = ? AND is_active = 1').get(model_id || 'google/gemini-2.5-flash-lite');
+  if (!model) return res.status(404).json({ error: 'Модель не найдена' });
+
+  try {
+    const result = await generateModelResponse(model, content, 'Demo User');
+    res.json({ response: result.response, remaining: 3 - count });
+  } catch (e) {
+    console.error('[v1/chat/demo] error:', e.message);
+    res.status(502).json({ error: e.message || 'Ошибка генерации ответа' });
+  }
+});
+
+// Cleanup old IPs every hour
+setInterval(() => { demoIpCounts.clear(); }, 3600_000);
 
 app.listen(PORT, async () => {
   logger.info('server started', { url: `http://localhost:${PORT}`, api: `http://localhost:${PORT}/api` });
@@ -4319,36 +3839,6 @@ app.listen(PORT, async () => {
     }
   }
 
-  // ── JustRouter AI CEO Agent: report every 12 hours ──
-  if (JUSTROUTER_AGENT_ENABLED && JUSTROUTER_CEO_CHAT_ID && OPENROUTER_API_KEY) {
-    const CEO_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
-
-    async function runCeoReport() {
-      console.log('[ceo-agent] generating scheduled report...');
-      try {
-        const result = await generateCeoReport({
-          db,
-          apiKey: OPENROUTER_API_KEY,
-          dispatcher: openRouterDispatcher,
-          sendTelegramFn: (id, msg) => sendTelegramMessage(id, msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { parse_mode: 'HTML' }),
-          ceoChatId: JUSTROUTER_CEO_CHAT_ID,
-        });
-        console.log(`[ceo-agent] report generated: ${result.ok ? 'OK' : 'ERROR'}`);
-      } catch (e) {
-        console.error('[ceo-agent] report error:', e.message);
-      }
-    }
-
-    // Run first report after 1 minute delay (server startup)
-    setTimeout(() => {
-      runCeoReport();
-      // Then every 12 hours
-      setInterval(runCeoReport, CEO_INTERVAL_MS);
-      console.log(`[ceo-agent] scheduled every 12 hours, first report in 1 minute`);
-    }, 60_000);
-  } else {
-    console.log('[ceo-agent] disabled (set JUSTROUTER_AGENT_ENABLED=true, JUSTROUTER_CEO_CHAT_ID, and OPENROUTER_API_KEY)');
-  }
 });
 
 // ── Periodic cleanup of expired verification codes ──
