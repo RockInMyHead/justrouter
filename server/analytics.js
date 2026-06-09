@@ -131,3 +131,95 @@ export function getSessionAnalytics(db, { hours = 24 } = {}) {
     max_session_duration_secs: sessionDuration.max_duration_secs || 0,
   };
 }
+
+// ── Session recording for replay ──
+
+export function saveSessionRecording(db, payload) {
+  const visitorId = normalizeText(payload.visitor_id, 128) || 'unknown';
+  const sessionId = normalizeText(payload.session_id, 128) || '';
+  const userId = payload.user_id || null;
+  const userName = normalizeText(payload.user_name, 255) || null;
+  const userEmail = normalizeText(payload.user_email, 255) || null;
+  const startUrl = normalizeText(payload.start_url, 512) || '/';
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  const eventCount = events.length;
+  const pages = new Set();
+  let firstTime = null, lastTime = null;
+
+  const cleanEvents = events.map(e => {
+    if (e.t) {
+      if (firstTime === null) firstTime = e.t;
+      lastTime = e.t;
+    }
+    if (e.type === 'pageview' && e.url) pages.add(e.url);
+    return {
+      t: e.t || 0,
+      type: e.type || 'unknown',
+      data: e.data || {},
+    };
+  });
+
+  const durationSecs = firstTime && lastTime ? Math.round((lastTime - firstTime) / 1000) : 0;
+
+  // Try to update existing recording for this session, or insert new
+  const existing = db.prepare('SELECT id, events FROM session_recordings WHERE session_id = ? AND status = ?').get(sessionId, 'recording');
+  if (existing) {
+    const existingEvents = JSON.parse(existing.events || '[]');
+    const merged = [...existingEvents];
+
+    // Merge new events, avoid duplicates by timestamp+type
+    const existingKeys = new Set(merged.map(e => `${e.t}_${e.type}`));
+    for (const e of cleanEvents) {
+      const key = `${e.t}_${e.type}`;
+      if (!existingKeys.has(key)) {
+        merged.push(e);
+        existingKeys.add(key);
+      }
+    }
+
+    merged.sort((a, b) => a.t - b.t);
+    const mergedPages = new Set();
+    merged.forEach(e => { if (e.type === 'pageview' && e.data?.url) mergedPages.add(e.data.url); });
+
+    const mergedDuration = merged.length > 1 && merged[0].t ? Math.round((merged[merged.length - 1].t - merged[0].t) / 1000) : durationSecs;
+
+    db.prepare(`
+      UPDATE session_recordings SET events = ?, event_count = ?, page_count = ?, duration_secs = ?, end_at = datetime('now')
+      WHERE id = ?
+    `).run(JSON.stringify(merged), merged.length, mergedPages.size, mergedDuration, existing.id);
+    return { id: existing.id, updated: true };
+  } else {
+    const result = db.prepare(`
+      INSERT INTO session_recordings (visitor_id, session_id, user_id, user_name, user_email, start_url, start_at, end_at, duration_secs, event_count, page_count, events, status)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, 'completed')
+    `).run(visitorId, sessionId, userId, userName, userEmail, startUrl, durationSecs, eventCount, pages.size, JSON.stringify(cleanEvents));
+    return { id: result.lastInsertRowid, inserted: true };
+  }
+}
+
+export function getSessionRecordingsList(db, { limit = 50, offset = 0, userId, visitorId } = {}) {
+  let where = 'WHERE status = ?';
+  const params = ['completed'];
+
+  if (userId) { where += ' AND user_id = ?'; params.push(userId); }
+  if (visitorId) { where += ' AND visitor_id = ?'; params.push(visitorId); }
+
+  const total = db.prepare(`SELECT COUNT(*) as count FROM session_recordings ${where}`).get(...params).count;
+
+  const rows = db.prepare(`
+    SELECT id, visitor_id, session_id, user_id, user_name, user_email, start_url, start_at, end_at, duration_secs, event_count, page_count, status
+    FROM session_recordings ${where}
+    ORDER BY start_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+
+  return { total, recordings: rows, limit, offset };
+}
+
+export function getSessionRecordingDetail(db, id) {
+  return db.prepare('SELECT * FROM session_recordings WHERE id = ?').get(id);
+}
+
+export function deleteSessionRecording(db, id) {
+  db.prepare('DELETE FROM session_recordings WHERE id = ?').run(id);
+}

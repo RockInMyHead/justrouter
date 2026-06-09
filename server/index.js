@@ -57,6 +57,10 @@ import {
   getRageClickData,
   getSessionAnalytics,
   recordFunnelEvent,
+  saveSessionRecording,
+  getSessionRecordingsList,
+  getSessionRecordingDetail,
+  deleteSessionRecording,
 } from './analytics.js';
 import {
   getOrCreateConversation,
@@ -3273,6 +3277,7 @@ function deleteAllUserData(dbConn, userId) {
   dbConn.prepare('DELETE FROM support_conversations WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM analytics_events WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM session_recordings WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM site_purchases WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM video_jobs WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM yookassa_payments WHERE user_id = ?').run(userId);
@@ -3408,6 +3413,41 @@ app.get('/api/admin/analytics/rage-clicks', adminMiddleware, (req, res) => {
 app.get('/api/admin/analytics/sessions', adminMiddleware, (req, res) => {
   const hours = Number(req.query.hours || 24);
   res.json(getSessionAnalytics(db, { hours }));
+});
+
+// ── Session recording (total user monitoring / replay) ──
+
+// Client sends recorded events for a session
+app.post('/api/record/session', publicWriteRateLimit, (req, res) => {
+  try {
+    const result = saveSessionRecording(db, req.body);
+    res.json(result);
+  } catch (e) {
+    console.error('[session-record] error:', e.message);
+    res.status(500).json({ error: 'Failed to save recording' });
+  }
+});
+
+// Admin: list all session recordings
+app.get('/api/admin/recordings', adminMiddleware, (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 50), 200);
+  const offset = Number(req.query.offset || 0);
+  const userId = req.query.user_id || null;
+  const visitorId = req.query.visitor_id || null;
+  res.json(getSessionRecordingsList(db, { limit, offset, userId, visitorId }));
+});
+
+// Admin: get full recording detail (with events) for replay
+app.get('/api/admin/recordings/:id', adminMiddleware, (req, res) => {
+  const rec = getSessionRecordingDetail(db, req.params.id);
+  if (!rec) return res.status(404).json({ error: 'Not found' });
+  res.json(rec);
+});
+
+// Admin: delete a recording
+app.delete('/api/admin/recordings/:id', adminMiddleware, (req, res) => {
+  deleteSessionRecording(db, req.params.id);
+  res.json({ ok: true });
 });
 
 // ── Admin: Promo codes ──

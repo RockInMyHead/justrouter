@@ -5,7 +5,7 @@ import {
   Headphones, Shield, Search, Plus, Edit2, Trash2, Check, X, ToggleLeft, ToggleRight,
   Key, Globe, Server, Cpu, DollarSign, RefreshCw, TrendingUp, MessageSquare,
   Calendar, ExternalLink, ScrollText, BarChart3, Filter, Zap, Gift, Trash, UserPlus, Building2, FileText,
-  PenSquare, HelpCircle, Clock, Layers, Timer,
+  PenSquare, HelpCircle, Clock, Layers, Timer, Play, Pause, SkipForward, SkipBack, Monitor, Video,
 } from 'lucide-react';
 import { adminFetch, clearAdminToken, getAdminHeaders, getAdminToken, setAdminToken } from './adminApi.js';
 import { ActivityChart, StatCard } from './admin/AdminWidgets.jsx';
@@ -2770,8 +2770,462 @@ function FaqTab() {
   );
 }
 
+// ── Session Recording (total user monitoring / replay) ──
+function SessionRecordingTab() {
+  var [view, setView] = useState('list'); // 'list' | 'replay'
+  var [recordings, setRecordings] = useState([]);
+  var [total, setTotal] = useState(0);
+  var [loading, setLoading] = useState(true);
+  var [selectedRec, setSelectedRec] = useState(null);
+  var [events, setEvents] = useState([]);
+  var [searchTerm, setSearchTerm] = useState('');
+  var [page, setPage] = useState(0);
+  var pageSize = 20;
 
+  // ── Replay state ──
+  var replayRef = useRef(null);
+  var animRef = useRef(null);
+  var timeRef = useRef(0);
+  var playingRef = useRef(false);
+  var [playing, setPlaying] = useState(false);
+  var [speed, setSpeed] = useState(1);
+  var [currentTime, setCurrentTime] = useState(0);
+  var [duration, setDuration] = useState(0);
+  var [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  var [cursorVisible, setCursorVisible] = useState(false);
+  var [clickFlash, setClickFlash] = useState(null);
+  var [currentUrl, setCurrentUrl] = useState('');
+  var [scrollY, setScrollY] = useState(0);
+  var [maxScroll, setMaxScroll] = useState(1000);
+  var [replayEvents, setReplayEvents] = useState([]);
 
+  function loadRecordings() {
+    setLoading(true);
+    var token = getToken();
+    var params = '?limit=' + pageSize + '&offset=' + (page * pageSize);
+    if (searchTerm) params += '&visitor_id=' + encodeURIComponent(searchTerm);
+    adminFetch('/api/admin/recordings' + params, { headers: getHeaders() })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (d) { setRecordings(d.recordings || []); setTotal(d.total); }
+      })
+      .catch(function() {})
+      .finally(function() { setLoading(false); });
+  }
+
+  useEffect(function() { loadRecordings(); }, [page, searchTerm]);
+
+  function openReplay(rec) {
+    setView('replay');
+    setSelectedRec(rec);
+    timeRef.current = 0;
+    playingRef.current = false;
+    setPlaying(false);
+    setCurrentTime(0);
+    setMousePos({ x: 0, y: 0 });
+    setCursorVisible(false);
+    setClickFlash(null);
+    setScrollY(0);
+
+    var token = getToken();
+    adminFetch('/api/admin/recordings/' + rec.id, { headers: getHeaders() })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (!d) return;
+        var evts = [];
+        try { evts = JSON.parse(d.events || '[]'); } catch {}
+        // Sort by time
+        evts.sort(function(a, b) { return a.t - b.t; });
+        setReplayEvents(evts);
+        if (evts.length > 0) {
+          var dur = evts[evts.length - 1].t - evts[0].t;
+          setDuration(Math.max(dur, 1000));
+          // Set initial URL
+          var initialPage = evts.find(function(e) { return e.type === 'pageview'; });
+          if (initialPage) setCurrentUrl(initialPage.data?.url || initialPage.data?.path || '');
+        }
+      })
+      .catch(function() {});
+  }
+
+  function closeReplay() {
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    playingRef.current = false;
+    setView('list');
+    setSelectedRec(null);
+    setPlaying(false);
+  }
+
+  function deleteRec(recId) {
+    var token = getToken();
+    adminFetch('/api/admin/recordings/' + recId, { method: 'DELETE', headers: getHeaders() })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function() { loadRecordings(); })
+      .catch(function() {});
+  }
+
+  function formatRecDuration(secs) {
+    if (!secs || secs < 0) return '<1s';
+    if (secs < 60) return secs + 'с';
+    var m = Math.floor(secs / 60);
+    var s = secs % 60;
+    return m + 'м ' + s + 'с';
+  }
+
+  function formatRecDate(dateStr) {
+    if (!dateStr) return '';
+    try {
+      var d = new Date(dateStr.replace(' ', 'T') + 'Z');
+      return d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    } catch { return dateStr; }
+  }
+
+  // ── Replay loop ──
+  function startReplay() {
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    setPlaying(true);
+    playingRef.current = true;
+    var startTime = replayEvents.length > 0 ? replayEvents[0].t : 0;
+    var lastFrameTime = performance.now();
+
+    function frame(now) {
+      if (!playingRef.current) return;
+
+      var elapsed = now - lastFrameTime;
+      lastFrameTime = now;
+      var prev = timeRef.current;
+      var next = prev + elapsed * speed;
+      if (next >= duration) {
+        timeRef.current = duration;
+        setCurrentTime(duration);
+        playingRef.current = false;
+        setPlaying(false);
+        renderEventsAtTime(startTime + duration);
+        return;
+      }
+      timeRef.current = next;
+      setCurrentTime(next);
+
+      renderEventsAtTime(startTime + next);
+      animRef.current = requestAnimationFrame(frame);
+    }
+    animRef.current = requestAnimationFrame(frame);
+  }
+
+  function renderEventsAtTime(absTime) {
+    // Find the last mousemove, click, scroll, pageview before absTime
+    var lastMove = null;
+    var lastClick = null;
+    var lastScroll = null;
+    var lastPageView = null;
+    var lastInput = null;
+    var clickTime = 0;
+
+    for (var i = 0; i < replayEvents.length; i++) {
+      var e = replayEvents[i];
+      if (e.t > absTime) break;
+      if (e.type === 'mousemove') lastMove = e;
+      if (e.type === 'click') { lastClick = e; clickTime = e.t; }
+      if (e.type === 'scroll') lastScroll = e;
+      if (e.type === 'pageview') lastPageView = e;
+      if (e.type === 'input') lastInput = e;
+    }
+
+    if (lastMove) setMousePos({ x: lastMove.data.x, y: lastMove.data.y });
+    setCursorVisible(!!lastMove || !!lastClick);
+
+    if (lastClick && absTime - clickTime < 200) {
+      setClickFlash({ x: lastClick.data.pageX || lastClick.data.x, y: lastClick.data.pageY || lastClick.data.y });
+    } else {
+      setClickFlash(null);
+    }
+
+    if (lastScroll) { setScrollY(lastScroll.data.scrollY); if (lastScroll.data.maxScroll) setMaxScroll(lastScroll.data.maxScroll); }
+    if (lastPageView) setCurrentUrl(lastPageView.data?.url || lastPageView.data?.path || '');
+  }
+
+  function pauseReplay() {
+    playingRef.current = false;
+    setPlaying(false);
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+  }
+
+  function togglePlay() {
+    if (playingRef.current) pauseReplay();
+    else startReplay();
+  }
+
+  function scrubTo(time) {
+    timeRef.current = time;
+    setCurrentTime(time);
+    var startTime = replayEvents.length > 0 ? replayEvents[0].t : 0;
+    renderEventsAtTime(startTime + time);
+  }
+
+  function formatTime(ms) {
+    if (!ms || ms < 0) return '0:00';
+    var totalSecs = Math.floor(ms / 1000);
+    var mins = Math.floor(totalSecs / 60);
+    var secs = totalSecs % 60;
+    return mins + ':' + (secs < 10 ? '0' : '') + secs;
+  }
+
+  // Clean up on unmount
+  useEffect(function() { return function() { if (animRef.current) cancelAnimationFrame(animRef.current); }; }, []);
+
+  if (view === 'replay' && selectedRec) {
+    var progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+    var rec = selectedRec;
+
+    return (
+      <div className="space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button onClick={closeReplay} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer"><SkipBack size={12} /> Назад</button>
+            <h2 className="text-white font-semibold text-lg">Просмотр сессии</h2>
+          </div>
+          <div className="flex items-center gap-3 text-xs font-mono text-white/30">
+            <span>{rec.user_name || 'Гость'}</span>
+            <span className="w-1 h-1 rounded-full bg-white/20" />
+            <span>{formatRecDuration(rec.duration_secs)}</span>
+            <span className="w-1 h-1 rounded-full bg-white/20" />
+            <span>{rec.event_count || 0} событий</span>
+          </div>
+        </div>
+
+        {/* Player controls */}
+        <div className="rounded-2xl p-4 space-y-3" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+          {/* Timeline */}
+          <div className="relative">
+            <input
+              type="range"
+              min="0"
+              max={Math.max(duration, 1)}
+              value={currentTime}
+              onChange={function(e) { scrubTo(Number(e.target.value)); }}
+              className="w-full h-1 appearance-none rounded-full cursor-pointer"
+              style={{
+                background: 'linear-gradient(to right, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.3) ' + progress + '%, rgba(255,255,255,0.06) ' + progress + '%, rgba(255,255,255,0.06) 100%)',
+                outline: 'none',
+                accentColor: 'white',
+              }}
+            />
+          </div>
+
+          {/* Controls row */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <button onClick={togglePlay}
+                className={'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono transition-all cursor-pointer ' + (playing ? 'text-white/70 hover:text-white' : 'text-white/70 hover:text-white')}
+                style={{ backgroundColor: playing ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.05)' }}>
+                {playing ? <Pause size={14} /> : <Play size={14} />}
+                {playing ? 'Пауза' : 'Старт'}
+              </button>
+
+              <div className="flex items-center gap-1">
+                {[0.5, 1, 2, 4].map(function(s) {
+                  return (
+                    <button key={s} onClick={function() { setSpeed(s); }}
+                      className={'px-2 py-1 rounded-md text-xs font-mono transition-all cursor-pointer ' + (speed === s ? 'text-white' : 'text-white/30 hover:text-white/60')}
+                      style={{ backgroundColor: speed === s ? 'rgba(255,255,255,0.08)' : 'transparent' }}>
+                      {s}x
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="text-xs font-mono text-white/40">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </div>
+          </div>
+        </div>
+
+        {/* Virtual browser viewport */}
+        <div className="rounded-2xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)', backgroundColor: '#0a0a0f' }}>
+          {/* Browser chrome */}
+          <div className="flex items-center gap-2 px-4 py-2" style={{ backgroundColor: 'rgba(255,255,255,0.03)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full bg-red-500/40" />
+              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/40" />
+              <div className="w-2.5 h-2.5 rounded-full bg-green-500/40" />
+            </div>
+            <div className="flex-1 mx-3 px-3 py-1 rounded-lg text-xs font-mono truncate" style={{ backgroundColor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)' }}>
+              {currentUrl || 'about:blank'}
+            </div>
+          </div>
+
+          {/* Viewport content */}
+          <div className="relative w-full" style={{ height: '480px', maxHeight: '60vh', overflow: 'hidden' }}>
+            {/* Page content visualization */}
+            <div className="absolute inset-0 p-6" style={{ transform: 'translateY(' + (-scrollY * 0.5) + 'px)' }}>
+              <div className="space-y-4">
+                <div className="h-4 w-1/3 rounded-full" style={{ backgroundColor: 'rgba(255,255,255,0.06)' }} />
+                <div className="h-4 w-1/2 rounded-full" style={{ backgroundColor: 'rgba(255,255,255,0.04)' }} />
+                <div className="h-24 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }} />
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="h-20 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }} />
+                  <div className="h-20 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }} />
+                  <div className="h-20 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }} />
+                </div>
+                <div className="h-4 w-2/3 rounded-full" style={{ backgroundColor: 'rgba(255,255,255,0.04)' }} />
+                <div className="h-4 w-1/4 rounded-full" style={{ backgroundColor: 'rgba(255,255,255,0.04)' }} />
+                <div className="h-32 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }} />
+              </div>
+            </div>
+
+            {/* Scroll indicator */}
+            <div className="absolute right-2 top-0 bottom-0 w-1 rounded-full" style={{ backgroundColor: 'rgba(255,255,255,0.06)' }}>
+              <div className="w-full rounded-full" style={{
+                height: Math.max(5, (480 / maxScroll) * 100) + '%',
+                backgroundColor: 'rgba(255,255,255,0.2)',
+                transform: 'translateY(' + Math.min((scrollY / maxScroll) * 100, 100) + '%)',
+              }} />
+            </div>
+
+            {/* Mouse cursor */}
+            {cursorVisible && (
+              <div className="absolute pointer-events-none transition-all duration-75" style={{
+                left: Math.min(mousePos.x, 95) + '%',
+                top: Math.min(mousePos.y * 0.3, 90) + '%',
+                width: '20px',
+                height: '28px',
+              }}>
+                <svg width="20" height="28" viewBox="0 0 20 28" fill="none">
+                  <path d="M2 2L2 23.5L6.5 18.5L11 26L13 25L8.5 17.5L18 17.5L2 2Z" fill="rgba(255,255,255,0.9)" stroke="rgba(0,0,0,0.3)" strokeWidth="0.5" />
+                </svg>
+              </div>
+            )}
+
+            {/* Click flash */}
+            {clickFlash && (
+              <div className="absolute pointer-events-none" style={{
+                left: Math.min(clickFlash.x * 0.05, 90) + '%',
+                top: Math.min(clickFlash.y * 0.03, 85) + '%',
+                width: '30px',
+                height: '30px',
+                borderRadius: '50%',
+                backgroundColor: 'rgba(255,255,255,0.3)',
+                transform: 'translate(-50%, -50%) scale(0)',
+                animation: 'clickFlash 0.3s ease-out forwards',
+              }} />
+            )}
+          </div>
+
+          {/* Event log */}
+          <div className="px-4 py-2 text-xs font-mono text-white/20" style={{ borderTop: '1px solid rgba(255,255,255,0.04)', maxHeight: '60px', overflowY: 'auto' }}>
+            <div className="flex gap-1">
+              <Clock size={10} />
+              <span>{formatTime(currentTime)}</span>
+              <span className="mx-1">·</span>
+              <span>{replayEvents.filter(function(e) { return e.t <= (replayEvents[0]?.t || 0) + currentTime; }).length} событий</span>
+              {selectedRec && <><span className="mx-1">·</span><span>Всего: {replayEvents.length}</span></>}
+            </div>
+          </div>
+        </div>
+
+        {/* Recording info */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <InfoCard label="Посетитель" value={rec.visitor_id?.slice(0, 16) + '...' || 'N/A'} />
+          <InfoCard label="Пользователь" value={rec.user_name || rec.user_email || 'Гость'} />
+          <InfoCard label="Страниц" value={rec.page_count || 0} />
+          <InfoCard label="Дата" value={formatRecDate(rec.start_at)} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── List view ──
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-white font-semibold text-lg">Запись сессий</h2>
+          <p className="text-white/30 text-xs font-mono mt-0.5">Детальная запись действий каждого пользователя</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder="Поиск по visitor_id..."
+            value={searchTerm}
+            onChange={function(e) { setSearchTerm(e.target.value); setPage(0); }}
+            className="px-3 py-1.5 rounded-xl text-xs font-mono outline-none w-48"
+            style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' }}
+          />
+          <button onClick={loadRecordings} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer"><RefreshCw size={12} /></button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-8 text-white/20 text-xs font-mono">Загрузка...</div>
+      ) : recordings.length === 0 ? (
+        <div className="text-center py-12">
+          <Monitor size={32} className="mx-auto text-white/10 mb-3" />
+          <p className="text-white/20 text-xs font-mono">Нет записанных сессий</p>
+          <p className="text-white/10 text-xs font-mono mt-1">Данные появятся после активности пользователей</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {recordings.map(function(rec) {
+            return (
+              <div key={rec.id}
+                className="flex items-center justify-between px-4 py-3 rounded-2xl transition-all cursor-pointer hover:bg-white/[0.02]"
+                style={{ border: '1px solid rgba(255,255,255,0.06)' }}
+                onClick={function() { openReplay(rec); }}>
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className="size-8 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: 'rgba(59,130,246,0.1)' }}>
+                    <Video size={14} style={{ color: 'rgba(59,130,246,0.5)' }} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-white/80 text-sm font-medium truncate">{rec.user_name || 'Гость'}</div>
+                    <div className="text-white/30 text-xs font-mono truncate mt-0.5">
+                      {rec.user_email || rec.visitor_id?.slice(0, 20) || '—'}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 shrink-0">
+                  <div className="text-right hidden sm:block">
+                    <div className="text-white/50 text-xs font-mono">{formatRecDuration(rec.duration_secs)}</div>
+                    <div className="text-white/20 text-xs font-mono mt-0.5">{rec.event_count || 0} соб. · {rec.page_count || 0} стр.</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-white/30 text-xs font-mono">{formatRecDate(rec.start_at)}</div>
+                  </div>
+                  <button onClick={function(e) { e.stopPropagation(); if (confirm('Удалить запись сессии?')) deleteRec(rec.id); }}
+                    className="p-1.5 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {total > pageSize && (
+        <div className="flex items-center justify-center gap-2 pt-2">
+          <button onClick={function() { setPage(Math.max(0, page - 1)); }}
+            className="px-3 py-1.5 rounded-lg text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer"
+            disabled={page === 0}>← Назад</button>
+          <span className="text-xs font-mono text-white/30">{page + 1} / {Math.ceil(total / pageSize)}</span>
+          <button onClick={function() { if ((page + 1) * pageSize < total) setPage(page + 1); }}
+            className="px-3 py-1.5 rounded-lg text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer">Вперёд →</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InfoCard({ label, value }) {
+  return (
+    <div className="px-4 py-3 rounded-2xl" style={{ backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+      <div className="text-white/30 text-xs font-mono">{label}</div>
+      <div className="text-white/70 text-sm font-mono mt-1 truncate">{String(value ?? '—')}</div>
+    </div>
+  );
+}
 
 // ── Admin Dashboard Layout ──
 var ADMIN_TABS = [
@@ -2788,6 +3242,7 @@ var ADMIN_TABS = [
   { id: 'support', label: 'Поддержка', icon: MessageSquare },
   { id: 'blog', label: 'Блог', icon: FileText },
   { id: 'faq', label: 'FAQ', icon: HelpCircle },
+  { id: 'recording', label: 'Запись сессий', icon: Video },
 ];
 
 function AdminDashboard({ onLogout }) {
@@ -2832,6 +3287,7 @@ function AdminDashboard({ onLogout }) {
         {tab === 'support' && <SupportTab />}
         {tab === 'blog' && <BlogTab />}
         {tab === 'faq' && <FaqTab />}
+        {tab === 'recording' && <SessionRecordingTab />}
       </div>
     </div>
   );

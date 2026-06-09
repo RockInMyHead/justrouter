@@ -301,6 +301,29 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analyt
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_type ON analytics_events(event_type)'); } catch { /* exists */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_path ON analytics_events(path)'); } catch { /* exists */ }
 
+// ── Session recordings (detailed user event sequences for replay) ──
+db.exec(`
+  CREATE TABLE IF NOT EXISTS session_recordings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    visitor_id TEXT,
+    session_id TEXT,
+    user_id INTEGER,
+    user_name TEXT,
+    user_email TEXT,
+    start_url TEXT,
+    start_at TEXT DEFAULT (datetime('now')),
+    end_at TEXT,
+    duration_secs INTEGER DEFAULT 0,
+    event_count INTEGER DEFAULT 0,
+    page_count INTEGER DEFAULT 0,
+    events TEXT DEFAULT '[]',
+    status TEXT DEFAULT 'recording'
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_session_recordings_visitor ON session_recordings(visitor_id)'); } catch { /* exists */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_session_recordings_user ON session_recordings(user_id)'); } catch { /* exists */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_session_recordings_created ON session_recordings(start_at)'); } catch { /* exists */ }
+
 // ── OAuth (Yandex, Google, Apple) ──
 try { db.exec('ALTER TABLE users ADD COLUMN oauth_yandex_id TEXT'); } catch { /* exists */ }
 try { db.exec('ALTER TABLE users ADD COLUMN oauth_google_id TEXT'); } catch { /* exists */ }
