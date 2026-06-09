@@ -2206,6 +2206,14 @@ var ADMIN_TABS = [
   { id: 'overview', label: 'Обзор', icon: BarChart3 },
   { id: 'users', label: 'Пользователи', icon: Users },
   { id: 'models', label: 'Модели', icon: Cpu },
+  { id: 'model-dashboard', label: 'Дашборд моделей', icon: TrendingUp },
+  { id: 'model-logs', label: 'Логи моделей', icon: Layers },
+  { id: 'corporate', label: 'Корп. клиенты', icon: Building2 },
+  { id: 'referrals', label: 'Промокоды', icon: Gift },
+  { id: 'users-dashboard', label: 'Дашборд юзеров', icon: Activity },
+  { id: 'support', label: 'Поддержка', icon: MessageSquare },
+  { id: 'blog', label: 'Блог', icon: FileText },
+  { id: 'faq', label: 'FAQ', icon: HelpCircle },
 ];
 
 function AdminDashboard({ onLogout }) {
@@ -2240,6 +2248,14 @@ function AdminDashboard({ onLogout }) {
         {tab === 'overview' && <OverviewTab />}
         {tab === 'users' && <UsersTab />}
         {tab === 'models' && <ModelsTab />}
+        {tab === 'model-logs' && <ModelLogsTab />}
+        {tab === 'model-dashboard' && <ModelDashboardTab />}
+        {tab === 'corporate' && <CorporateTab />}
+        {tab === 'referrals' && <ReferralsTab />}
+        {tab === 'users-dashboard' && <UsersDashboardTab />}
+        {tab === 'support' && <SupportTab />}
+        {tab === 'blog' && <BlogTab />}
+        {tab === 'faq' && <FaqTab />}
       </div>
     </div>
   );
