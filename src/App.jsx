@@ -116,104 +116,149 @@ function MobileMenu({ open, onClose, onLoginClick, onRegisterClick, userName, on
   const navigate = useNavigate();
   return (
     <>
+      {/* Backdrop */}
       <div
-        className="fixed inset-0 z-[60] lg:hidden transition-all duration-500"
+        className="fixed inset-0 z-[60] lg:hidden transition-all duration-400"
         style={{
-          backdropFilter: open ? 'blur(12px)' : 'blur(0px)',
-          backgroundColor: open ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0)',
+          backdropFilter: open ? 'blur(16px)' : 'blur(0px)',
+          WebkitBackdropFilter: open ? 'blur(16px)' : 'blur(0px)',
+          backgroundColor: open ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0)',
           pointerEvents: open ? 'auto' : 'none',
         }}
         onClick={onClose}
       />
+
+      {/* Panel */}
       <div
-        className="fixed top-0 left-0 right-0 z-[70] lg:hidden overflow-hidden"
+        className="fixed top-0 left-0 right-0 z-[70] lg:hidden"
         style={{
-          maxHeight: open ? 'min(100dvh, 640px)' : '0px',
-          transition: 'max-height 0.5s cubic-bezier(0.23, 1, 0.32, 1)',
+          transform: open ? 'translateY(0)' : 'translateY(-100%)',
+          transition: 'transform 0.45s cubic-bezier(0.23, 1, 0.32, 1)',
         }}
       >
         <div
-          className="pt-20 pb-6 px-5 overflow-y-auto"
+          className="relative overflow-y-auto"
           style={{
-            backgroundColor: panelBg,
+            backgroundColor: '#0a0a0f',
             borderBottom: '1px solid rgba(255,255,255,0.08)',
-            maxHeight: 'min(100dvh, 640px)',
-            paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom))',
+            maxHeight: '100dvh',
+            paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
           }}
         >
-          <div
-            className="flex flex-col gap-1"
-            style={{
-              transitionDelay: open ? '80ms' : '0ms',
-              opacity: open ? 1 : 0,
-              transform: open ? 'translateY(0)' : 'translateY(-8px)',
-              transition: 'opacity 0.4s cubic-bezier(0.23,1,0.32,1) 80ms, transform 0.4s cubic-bezier(0.23,1,0.32,1) 80ms',
-            }}
-          >
-            <ModelCategoryNav layout="vertical" onSelect={() => onClose()} />
-          </div>
-          <div
-            className="mt-5 pt-5"
-            style={{
-              borderTop: '1px solid rgba(255,255,255,0.07)',
-              transitionDelay: open ? '360ms' : '0ms',
-              opacity: open ? 1 : 0,
-              transform: open ? 'translateY(0)' : 'translateY(-8px)',
-              transition: `opacity 0.4s cubic-bezier(0.23,1,0.32,1) 360ms, transform 0.4s cubic-bezier(0.23,1,0.32,1) 360ms`,
-            }}
-          >
+          {/* Header with close */}
+          <div className="flex items-center justify-between px-5 pt-4 pb-2">
             <button
-              onClick={() => { onSubscriptionClick(); onClose(); }}
-              className="w-full py-3 rounded-full text-sm font-medium btn-liquid-glass"
+              type="button"
+              onClick={() => { navigate('/'); onClose(); }}
+              className="text-white text-xl font-semibold tracking-tight"
               style={{ fontFamily: 'Inter, sans-serif' }}
             >
-              Подписка
+              JustRouter
             </button>
-            {userName ? (
-              <div className="flex flex-col gap-2">
-                <div
-                  className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium cursor-pointer transition-all duration-200"
-                  style={{ backgroundColor: softPanelBg, border: '1px solid rgba(255,255,255,0.08)' }}
-                  onClick={function () { navigate('/account?tab=topup'); onClose(); }}
-                  onMouseOver={function (e) { e.currentTarget.style.borderColor = 'rgba(251,191,36,0.4)'; }}
-                  onMouseOut={function (e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
-                >
-                  <Coins size={13} style={{ color: '#F59E0B' }} />
-                  <span className="text-white/70">{Number(balance ?? 0).toFixed(2)} ₽</span>
+            <button
+              onClick={onClose}
+              className="size-9 flex items-center justify-center rounded-full hover:bg-white/10 transition-colors"
+              aria-label="Закрыть меню"
+            >
+              <X size={20} color="white" strokeWidth={1.5} />
+            </button>
+          </div>
+
+          {/* Main nav links */}
+          <div className="px-4 pt-2 pb-3" style={{ opacity: open ? 1 : 0, transition: 'opacity 0.3s ease 0.15s' }}>
+            <div className="flex flex-col gap-0.5">
+              {[
+                { label: 'Главная', path: '/' },
+                { label: 'Модели', path: '/models' },
+                { label: 'Тарифы', path: '/pricing' },
+                { label: 'Документация', path: '/docs' },
+                { label: 'Блог', path: '/blog' },
+                { label: 'FAQ', path: '/faq' },
+              ].map(function(item) {
+                return (
+                  <button
+                    key={item.path}
+                    onClick={() => { navigate(item.path); onClose(); }}
+                    className="w-full text-left text-white/80 hover:text-white text-base py-3.5 px-4 rounded-2xl hover:bg-white/5 transition-all duration-200 font-medium"
+                    style={{ fontFamily: 'Inter, sans-serif' }}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Category nav */}
+          <div className="px-4 pb-2">
+            <div className="rounded-2xl overflow-hidden" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }}>
+              <div className="px-4 pt-3 pb-1 text-white/30 text-[10px] font-mono uppercase tracking-wider">Категории моделей</div>
+              <ModelCategoryNav layout="vertical" onSelect={() => onClose()} buttonClassName="text-white/70 hover:text-white text-base py-3 px-4 hover:bg-white/5 transition-all duration-200 text-left w-full" />
+            </div>
+          </div>
+
+          {/* Auth / Account section */}
+          <div className="px-4 pb-4">
+            <div className="rounded-2xl p-4" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }}>
+              {userName ? (
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/80 text-sm font-medium truncate mr-2">{userName}</span>
+                    <div
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer shrink-0"
+                      style={{ backgroundColor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)' }}
+                      onClick={() => { navigate('/account?tab=topup'); onClose(); }}
+                    >
+                      <Coins size={12} style={{ color: '#F59E0B' }} />
+                      <span className="text-white/70">{Number(balance ?? 0).toFixed(2)} ₽</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { navigate('/account'); onClose(); }}
+                      className="flex-1 py-3 rounded-xl text-sm font-medium text-white bg-white/10 hover:bg-white/15 transition-all cursor-pointer"
+                    >
+                      Личный кабинет
+                    </button>
+                    <button
+                      onClick={onSubscriptionClick}
+                      className="py-3 px-4 rounded-xl text-sm font-medium btn-liquid-glass cursor-pointer"
+                    >
+                      Подписка
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => { onLogout(); onClose(); }}
+                    className="w-full py-2.5 rounded-xl text-sm font-medium text-white/50 hover:text-white/80 border border-white/10 hover:border-white/20 transition-all cursor-pointer"
+                  >
+                    Выйти
+                  </button>
                 </div>
-                <button
-                  onClick={() => { navigate('/account'); onClose(); }}
-                  className="w-full py-3 rounded-full text-white text-sm font-medium transition-all duration-200 "
-                  style={{ fontFamily: 'Inter, sans-serif' }}
-                >
-                  Личный кабинет
-                </button>
-                <button
-                  onClick={() => { onLogout(); onClose(); }}
-                  className="w-full py-3 rounded-full text-white/80 text-sm font-medium transition-all duration-200 border border-white/10 hover:border-white/30"
-                  style={{ fontFamily: 'Inter, sans-serif' }}
-                >
-                  Выйти
-                </button>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { onLoginClick(); onClose(); }}
-                  className="flex-1 py-3 rounded-full text-white/80 text-sm font-medium transition-all duration-200 border border-white/10 hover:border-white/30 cursor-pointer "
-                  style={{ fontFamily: 'Inter, sans-serif' }}
-                >
-                  Вход
-                </button>
-                <button
-                  onClick={() => { onRegisterClick(); onClose(); }}
-                  className="flex-1 py-3 rounded-full btn-solid-light text-sm font-medium transition-all duration-300 hover:opacity-80 cursor-pointer "
-                  style={{ fontFamily: 'Inter, sans-serif' }}
-                >
-                  Регистрация
-                </button>
-              </div>
-            )}
+              ) : (
+                <div className="flex flex-col gap-2.5">
+                  <button
+                    onClick={() => { onSubscriptionClick(); onClose(); }}
+                    className="w-full py-3 rounded-xl text-sm font-medium btn-liquid-glass cursor-pointer"
+                  >
+                    Подписка
+                  </button>
+                  <div className="flex gap-2.5">
+                    <button
+                      onClick={() => { onLoginClick(); onClose(); }}
+                      className="flex-1 py-3 rounded-xl text-sm font-medium text-white/80 border border-white/15 hover:border-white/30 transition-all cursor-pointer"
+                    >
+                      Вход
+                    </button>
+                    <button
+                      onClick={() => { onRegisterClick(); onClose(); }}
+                      className="flex-1 py-3 rounded-xl text-sm font-medium btn-solid-light transition-all duration-300 hover:opacity-80 cursor-pointer"
+                    >
+                      Регистрация
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
