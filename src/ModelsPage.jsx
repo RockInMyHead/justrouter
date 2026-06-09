@@ -6,6 +6,7 @@ import { getToken, clearAuth } from './auth.js';
 import AppSidebar from './AppSidebar.jsx';
 import { getVideoOptionLists, modelSupportsFrameType, videoFramesToPayload } from './videoMeta.js';
 import VideoFramePicker from './VideoFramePicker.jsx';
+import { logChatSend, logImageGenerate, logVideoGenerate, logAudioGenerate } from './userActionLogger.js';
 
 const pageBg = 'var(--page-bg)';
 const panelBg = 'var(--panel-bg)';
@@ -250,6 +251,8 @@ function TtsTool({ model }) {
     setAudioUrl(null);
     setAudioBlob(null);
     setTranscript('');
+
+    try { logAudioGenerate(selectedModelId, voice, t.length); } catch {}
 
     api.generateAudio({ model_id: selectedModelId, prompt: t, voice: voice }).then(function(res) {
       if (res.error) { setError(res.error); return; }
@@ -673,6 +676,9 @@ function ImageTool({ model: initialModel, onBalanceChange, onLoginRequired }) {
     setGeneratedText('');
     var start = Date.now();
     setElapsed(0);
+
+    try { logImageGenerate(model.id, prompt.trim().length); } catch {}
+
     timerRef.current = setInterval(function() {
       setElapsed(Date.now() - start);
     }, 100);
@@ -928,6 +934,9 @@ function VideoTool({ model: initialModel, onBalanceChange, onLoginRequired }) {
     setCostRub(null);
     var start = Date.now();
     setElapsed(0);
+
+    try { logVideoGenerate(model.id, prompt.trim().length); } catch {}
+
     timerRef.current = setInterval(function() {
       setElapsed(Date.now() - start);
     }, 100);
@@ -2195,6 +2204,8 @@ export default function ModelsPage() {
     setTextInput('');
     setTextMessages(function(prev) { return prev.concat([{ role: 'user', content: userMsg }]); });
     setTextLoading(true);
+
+    try { logChatSend(textChatModelId, userMsg.length); } catch {}
 
     api.sendMessage(textChatModelId, userMsg).then(function(result) {
       setTextMessages(function(prev) { return prev.concat([{ role: 'assistant', content: result.response }]); });

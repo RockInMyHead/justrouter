@@ -7,6 +7,7 @@ import PageSeo from './PageSeo.jsx'
 import { captureReferralFromUrl } from './referral.js'
 import { trackClick, trackScroll, onMouseMove, trackRageClick } from './analytics.js'
 import { startSessionRecording, stopSessionRecording } from './sessionRecorder.js'
+import { startActionLogger, stopActionLogger, logPageView } from './userActionLogger.js'
 import { LANDING_PAGES } from '../shared/seo-config.js'
 
 const AdminPanel = lazy(() => import('./AdminPanel.jsx'))
@@ -46,8 +47,17 @@ function AnalyticsTracker() {
   // Start session recording once on mount
   useEffect(() => {
     startSessionRecording()
-    return () => stopSessionRecording()
+    startActionLogger()
+    return () => {
+      stopSessionRecording()
+      stopActionLogger()
+    }
   }, [])
+
+  // Log page views on location change
+  useEffect(() => {
+    logPageView(location.pathname)
+  }, [location.pathname])
 
   useEffect(() => {
     const interactiveSelector = 'button,a,input,select,textarea,[role="button"],[data-track-click]'

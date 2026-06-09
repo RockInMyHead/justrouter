@@ -648,6 +648,8 @@ app.post('/api/auth/login', authRateLimit, requireJsonFields(['email', 'password
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions (user_id, token) VALUES (?, ?)').run(user.id, token);
 
+  logUserAction(db, user.id, 'login', JSON.stringify({ method: 'email', ip: req.ip || '' }));
+
   res.json({
     token,
     user: toPublicUser(db, user),
@@ -3372,6 +3374,7 @@ function deleteAllUserData(dbConn, userId) {
   dbConn.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM analytics_events WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM session_recordings WHERE user_id = ?').run(userId);
+  dbConn.prepare('DELETE FROM user_actions WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM site_purchases WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM video_jobs WHERE user_id = ?').run(userId);
   dbConn.prepare('DELETE FROM yookassa_payments WHERE user_id = ?').run(userId);
@@ -3542,6 +3545,50 @@ app.get('/api/admin/recordings/:id', adminMiddleware, (req, res) => {
 app.delete('/api/admin/recordings/:id', adminMiddleware, (req, res) => {
   deleteSessionRecording(db, req.params.id);
   res.json({ ok: true });
+});
+
+// ── User Action Log ──
+
+function logUserAction(db, userId, action, details) {
+  try {
+    db.prepare('INSERT INTO user_actions (user_id, action, details) VALUES (?, ?, ?)').run(userId, action, details || null);
+  } catch (e) {
+    console.error('[log-action] error:', e.message);
+  }
+}
+
+// Client-side action logging (authenticated)
+app.post('/api/log-action', publicWriteRateLimit, authMiddleware, (req, res) => {
+  const { action, details } = req.body;
+  if (!action) return res.status(400).json({ error: 'action is required' });
+  logUserAction(db, req.user.id, action, typeof details === 'object' ? JSON.stringify(details) : details);
+  res.json({ ok: true });
+});
+
+// Admin: view user actions
+app.get('/api/admin/user-actions', adminMiddleware, (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 100), 500);
+  const offset = Number(req.query.offset || 0);
+  const userId = req.query.user_id || null;
+  const action = req.query.action || null;
+
+  let sql = 'SELECT ua.*, u.name as user_name, u.email as user_email FROM user_actions ua JOIN users u ON u.id = ua.user_id';
+  const params = [];
+  const conditions = [];
+
+  if (userId) { conditions.push('ua.user_id = ?'); params.push(userId); }
+  if (action) { conditions.push('ua.action = ?'); params.push(action); }
+
+  if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
+  sql += ' ORDER BY ua.created_at DESC LIMIT ? OFFSET ?';
+  params.push(limit, offset);
+
+  const rows = db.prepare(sql).all(...params);
+
+  const countSql = 'SELECT COUNT(*) as total FROM user_actions ua' + (conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '');
+  const total = db.prepare(countSql).get(...params.slice(0, -2)).total;
+
+  res.json({ actions: rows, total, limit, offset });
 });
 
 // ── Admin: Promo codes ──

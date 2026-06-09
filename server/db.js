@@ -324,6 +324,23 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_session_recordings_visitor ON sess
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_session_recordings_user ON session_recordings(user_id)'); } catch { /* exists */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_session_recordings_created ON session_recordings(start_at)'); } catch { /* exists */ }
 
+// ── User Action Log ──
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
+      ip TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_user_actions_user ON user_actions(user_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_user_actions_created ON user_actions(created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_user_actions_action ON user_actions(action)');
+} catch (e) { console.error('[db] user_actions table error:', e.message); }
+
 // ── OAuth (Yandex, Google, Apple) ──
 try { db.exec('ALTER TABLE users ADD COLUMN oauth_yandex_id TEXT'); } catch { /* exists */ }
 try { db.exec('ALTER TABLE users ADD COLUMN oauth_google_id TEXT'); } catch { /* exists */ }

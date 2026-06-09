@@ -3269,6 +3269,7 @@ var ADMIN_TABS = [
   { id: 'blog', label: 'Блог', icon: FileText },
   { id: 'faq', label: 'FAQ', icon: HelpCircle },
   { id: 'recording', label: 'Запись сессий', icon: Video },
+  { id: 'user-actions', label: 'Лог действий', icon: Activity },
 ];
 
 function AdminDashboard({ onLogout }) {
@@ -3314,7 +3315,148 @@ function AdminDashboard({ onLogout }) {
         {tab === 'blog' && <BlogTab />}
         {tab === 'faq' && <FaqTab />}
         {tab === 'recording' && <SessionRecordingTab />}
+        {tab === 'user-actions' && <UserActionsTab />}
       </div>
+    </div>
+  );
+}
+
+// ── User Actions Log Tab ──
+function UserActionsTab() {
+  var token = getToken();
+  var [actions, setActions] = useState([]);
+  var [total, setTotal] = useState(0);
+  var [loading, setLoading] = useState(true);
+  var [userId, setUserId] = useState('');
+  var [page, setPage] = useState(0);
+  var [error, setError] = useState('');
+  var pageSize = 50;
+
+  useEffect(function() {
+    if (!token) return;
+    setLoading(true);
+    setError('');
+    var uq = userId ? '&user_id=' + encodeURIComponent(userId) : '';
+    fetch('/api/admin/user-actions?limit=' + pageSize + '&offset=' + (page * pageSize) + uq, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      setActions(d.actions || []);
+      setTotal(d.total || 0);
+    }).catch(function(e) { setError('Ошибка загрузки: ' + e.message); }).finally(function() {
+      setLoading(false);
+    });
+  }, [token, page, userId]);
+
+  function actionLabel(action) {
+    var labels = {
+      'pageview': 'Просмотр страницы',
+      'login': 'Вход в систему',
+      'register': 'Регистрация',
+      'model_use': 'Использование модели',
+      'chat_send': 'Отправка в чат',
+      'image_generate': 'Генерация изображения',
+      'video_generate': 'Генерация видео',
+      'audio_generate': 'Генерация аудио',
+      'balance_topup': 'Пополнение баланса',
+      'api_key_copy': 'Копирование API-ключа',
+      'export_audio': 'Экспорт аудио',
+      'batch': 'Пакет действий',
+    };
+    return labels[action] || action;
+  }
+
+  function parseDetails(details) {
+    if (!details) return '';
+    try {
+      var parsed = JSON.parse(details);
+      if (typeof parsed === 'string') return parsed;
+      if (parsed.path) return parsed.path;
+      if (parsed.model_id) return parsed.model_id + (parsed.model_name ? ' (' + parsed.model_name + ')' : '');
+      if (parsed.amount) return parsed.amount + ' ₽';
+      if (parsed.method) return 'через ' + parsed.method;
+      return JSON.stringify(parsed).slice(0, 100);
+    } catch {
+      return details.slice(0, 100);
+    }
+  }
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-white text-lg font-semibold">Лог действий пользователей</h2>
+          <p className="text-white/30 text-xs font-mono mt-1">Всего записей: {total}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input value={userId} onChange={function(e) { setUserId(e.target.value); setPage(0); }}
+            placeholder="ID пользователя"
+            className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-1.5 text-xs font-mono text-white/70 outline-none w-32"
+            style={{ backgroundColor: 'rgba(255,255,255,0.04)' }}
+          />
+        </div>
+      </div>
+
+      {error && <div className="text-red-400 text-xs mb-4">{error}</div>}
+
+      {loading ? (
+        <div className="text-center py-12 text-white/20 text-sm">Загрузка...</div>
+      ) : actions.length === 0 ? (
+        <div className="text-center py-12 text-white/20 text-sm">Нет записей</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs font-mono" style={{ borderCollapse: 'collapse' }}>
+            <thead>
+              <tr className="text-white/30" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                <th className="text-left py-2 px-3 font-medium">Время</th>
+                <th className="text-left py-2 px-3 font-medium">Пользователь</th>
+                <th className="text-left py-2 px-3 font-medium">Действие</th>
+                <th className="text-left py-2 px-3 font-medium">Детали</th>
+              </tr>
+            </thead>
+            <tbody>
+              {actions.map(function(a) {
+                return (
+                  <tr key={a.id} className="hover:bg-white/[0.02] transition-colors" style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                    <td className="py-2.5 px-3 text-white/40 whitespace-nowrap">{a.created_at}</td>
+                    <td className="py-2.5 px-3">
+                      <div className="text-white/70">{a.user_name || '—'}</div>
+                      <div className="text-white/30 text-[9px]">{a.user_email}{a.user_id ? ' (#' + a.user_id + ')' : ''}</div>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <span className="inline-block px-2 py-0.5 rounded text-[10px] font-medium"
+                        style={{
+                          backgroundColor: a.action === 'login' ? 'rgba(34,197,94,0.12)' : a.action === 'chat_send' || a.action === 'model_use' ? 'rgba(59,130,246,0.12)' : a.action === 'image_generate' || a.action === 'video_generate' || a.action === 'audio_generate' ? 'rgba(168,85,247,0.12)' : 'rgba(255,255,255,0.06)',
+                          color: a.action === 'login' ? 'rgba(34,197,94,0.8)' : a.action === 'chat_send' || a.action === 'model_use' ? 'rgba(96,165,250,0.8)' : a.action === 'image_generate' || a.action === 'video_generate' || a.action === 'audio_generate' ? 'rgba(168,85,247,0.8)' : 'rgba(255,255,255,0.5)',
+                        }}>
+                        {actionLabel(a.action)}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-white/40 max-w-[300px] truncate">{parseDetails(a.details)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {total > pageSize && (
+        <div className="flex items-center justify-center gap-3 mt-6">
+          <button onClick={function() { setPage(Math.max(0, page - 1)); }}
+            disabled={page === 0}
+            className="px-3 py-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer disabled:opacity-30"
+            style={{ border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)' }}>
+            ← Назад
+          </button>
+          <span className="text-white/30 text-xs font-mono">{page + 1} / {Math.ceil(total / pageSize)}</span>
+          <button onClick={function() { setPage(page + 1); }}
+            disabled={(page + 1) * pageSize >= total}
+            className="px-3 py-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer disabled:opacity-30"
+            style={{ border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)' }}>
+            Вперёд →
+          </button>
+        </div>
+      )}
     </div>
   );
 }
