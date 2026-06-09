@@ -1278,8 +1278,8 @@ export default function App() {
 
     const token = getToken();
     if (token) {
-      // Авторизованный пользователь — редирект на /models/audio
-      navigate('/models/audio', { replace: true });
+      // Авторизованный пользователь — редирект на /models (все модели)
+      navigate('/models', { replace: true });
       return;
     }
     clearAuth();
