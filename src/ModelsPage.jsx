@@ -1657,8 +1657,8 @@ function ModelCard({ model, onSelect, onApiKey, active = false }) {
           )}
           <button
             onClick={(e) => { e.stopPropagation(); onApiKey(model); }}
-            className="text-[10px] font-mono px-2.5 py-1 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/[0.04] transition-all"
-            style={{ border: '1px solid rgba(255,255,255,0.06)' }}
+            className="text-[10px] font-mono px-2.5 py-1 rounded-lg text-white/70 hover:text-white hover:bg-white/[0.08] transition-all font-semibold"
+            style={{ border: '1px solid rgba(255,255,255,0.15)' }}
             title="Инструкция по API"
           >
             API
@@ -2067,6 +2067,23 @@ export default function ModelsPage() {
   var videoToolModelIdState = useState('');
   var videoToolModelId = videoToolModelIdState[0];
   var setVideoToolModelId = videoToolModelIdState[1];
+  // Text inline chat state
+  var textChatModelIdState = useState('');
+  var textChatModelId = textChatModelIdState[0];
+  var setTextChatModelId = textChatModelIdState[1];
+  var textMessagesState = useState([]);
+  var textMessages = textMessagesState[0];
+  var setTextMessages = textMessagesState[1];
+  var textInputState = useState('');
+  var textInput = textInputState[0];
+  var setTextInput = textInputState[1];
+  var textLoadingState = useState(false);
+  var textLoading = textLoadingState[0];
+  var setTextLoading = textLoadingState[1];
+  var textFreeRequestsState = useState(10);
+  var textFreeRequests = textFreeRequestsState[0];
+  var setTextFreeRequests = textFreeRequestsState[1];
+  var chatRef = useRef(null);
 
   useEffect(function() {
     var token = getToken();
@@ -2155,6 +2172,68 @@ export default function ModelsPage() {
     setSelectedModel(null);
     setModalInitialMessage('');
   };
+
+  // Text inline chat handlers
+  function textSendMessage(rawText) {
+    var userMsg = rawText.trim();
+    if (!userMsg || textLoading) return;
+
+    if (textFreeRequests <= 0 && balance <= 0) {
+      setTextMessages(function(prev) { return prev.concat([{ role: 'user', content: userMsg }, { role: 'assistant', content: 'Недостаточно средств. Бесплатные запросы закончились — пополните баланс.' }]); });
+      setTextInput('');
+      return;
+    }
+
+    setTextInput('');
+    setTextMessages(function(prev) { return prev.concat([{ role: 'user', content: userMsg }]); });
+    setTextLoading(true);
+
+    api.sendMessage(textChatModelId, userMsg).then(function(result) {
+      setTextMessages(function(prev) { return prev.concat([{ role: 'assistant', content: result.response }]); });
+      setTextFreeRequests(result.free_remaining);
+      if (result.balance != null) {
+        setBalance(result.balance);
+        try {
+          var sess = JSON.parse(localStorage.getItem('velorix_session') || '{}');
+          sess.balance = result.balance;
+          localStorage.setItem('velorix_session', JSON.stringify(sess));
+        } catch {}
+      }
+    }).catch(function(err) {
+      setTextMessages(function(prev) { return prev.concat([{ role: 'assistant', content: 'Ошибка: ' + err.message }]); });
+    }).finally(function() {
+      setTextLoading(false);
+    });
+  }
+
+  function textHandleSend() { textSendMessage(textInput); }
+
+  function textHandleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      textHandleSend();
+    }
+  }
+
+  useEffect(function() {
+    if (chatRef.current) chatRef.current.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
+  }, [textMessages]);
+
+  // When text model changes, load its messages & free requests
+  useEffect(function() {
+    if (!textChatModelId) return;
+    api.getFreeRemaining(textChatModelId).then(function(r) { setTextFreeRequests(r.free_remaining); }).catch(function() {});
+    api.getMessages(textChatModelId).then(function(msgs) { setTextMessages(msgs); }).catch(function() {});
+  }, [textChatModelId]);
+
+  // Set default text model
+  useEffect(function() {
+    if (textChatModelId || models.length === 0 || category !== 'text') return;
+    var preferred = models.find(function(m) { return m.id === 'openai/gpt-4o'; })
+      || models.find(function(m) { return m.category === 'text'; })
+      || models[0];
+    if (preferred) setTextChatModelId(preferred.id);
+  }, [models, textChatModelId, category]);
 
   return (
     <div className="min-h-screen flex overflow-x-hidden" style={{ backgroundColor: pageBg }}>
@@ -2292,7 +2371,75 @@ export default function ModelsPage() {
         {/* Chat composer + grid */}
         <div className="px-5 sm:px-8 md:pl-6 py-8">
           <div className="max-w-7xl mx-auto">
-            {category === 'image' || category === 'video' || category === 'audio' ? (function() {
+            {category === 'image' || category === 'video' || category === 'audio' || category === 'text' ? (function() {
+              if (category === 'text') {
+                var textModels = models.filter(function(m) { return m.category === 'text'; }).sort(function(a, b) { return a.price - b.price; });
+                var activeTextModel = textModels.find(function(m) { return m.id === textChatModelId; }) || textModels[0] || null;
+                if (!activeTextModel || textModels.length === 0) return null;
+                return (
+                  <div className="mb-8">
+                    <div className="flex flex-col lg:flex-row gap-4 rounded-2xl overflow-hidden min-h-[400px] lg:min-h-[500px]" style={{ backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      {/* Left: Model selection */}
+                      <div className="lg:w-[240px] shrink-0 overflow-y-auto" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div className="p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <span className="text-white/40 text-[10px] font-mono uppercase tracking-wider">Модели</span>
+                        </div>
+                        <div className="py-1">
+                          {textModels.map(function(m) {
+                            var sel = m.id === (activeTextModel ? activeTextModel.id : '');
+                            return (
+                              <button key={m.id} onClick={function() { setTextChatModelId(m.id); setTextMessages([]); }}
+                                className={'w-full text-left px-3 py-2.5 transition-all cursor-pointer ' + (sel ? 'text-white' : 'text-white/40 hover:text-white/70')}
+                                style={{ backgroundColor: sel ? 'rgba(255,255,255,0.06)' : 'transparent' }}>
+                                <div className="flex items-center gap-2">
+                                  <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: sel ? m.color : 'rgba(255,255,255,0.2)' }} />
+                                  <span className="text-xs font-medium truncate">{m.name}</span>
+                                </div>
+                                <div className="text-[10px] font-mono mt-0.5 truncate pl-3.5" style={{ color: sel ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.15)' }}>
+                                  {formatModelPrice(m)}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      {/* Right: Chat area */}
+                      <div className="flex-1 flex flex-col min-w-0">
+                        <div className="p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="size-2 rounded-full" style={{ backgroundColor: activeTextModel.color }} />
+                              <span className="text-white/80 text-sm font-medium">{activeTextModel.name}</span>
+                              <span className="text-white/20 text-[10px] font-mono">{formatModelPrice(activeTextModel)}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button onClick={function(e) { e.stopPropagation(); setApiKeyModel(activeTextModel); }}
+                                className="text-[10px] font-mono px-2 py-1 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-all cursor-pointer"
+                                style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
+                                API
+                              </button>
+                              {textFreeRequests > 0 && (
+                                <span className="text-[10px] font-mono text-green-400/60">{textFreeRequests} бесплатно</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <TextChatTool
+                          model={activeTextModel}
+                          messages={textMessages}
+                          input={textInput}
+                          setInput={setTextInput}
+                          freeRequests={textFreeRequests}
+                          loading={textLoading}
+                          chatRef={chatRef}
+                          handleSend={textHandleSend}
+                          handleKeyDown={textHandleKeyDown}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
               var catModels = models.filter(function(m) { return m.category === category; }).sort(function(a, b) { return a.price - b.price; });
               var active = catModels.find(function(m) { return m.id === (category === 'image' ? imageToolModelId : category === 'video' ? videoToolModelId : ''); }) || catModels[0] || null;
               if (!active) return null;
