@@ -8,15 +8,23 @@ export function getSession() {
 }
 
 export function getToken() {
-  return localStorage.getItem('velorix_token');
+  try {
+    return localStorage.getItem('velorix_token');
+  } catch {
+    return null;
+  }
 }
 
 export function clearAuth() {
-  localStorage.removeItem('velorix_token');
-  localStorage.removeItem('velorix_session');
+  try {
+    localStorage.removeItem('velorix_token');
+    localStorage.removeItem('velorix_session');
+  } catch {}
 }
 
 export function saveAuth(token, user) {
-  localStorage.setItem('velorix_token', token);
-  localStorage.setItem('velorix_session', JSON.stringify(user));
+  try {
+    localStorage.setItem('velorix_token', token);
+    localStorage.setItem('velorix_session', JSON.stringify(user));
+  } catch {}
 }

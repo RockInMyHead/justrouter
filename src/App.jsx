@@ -1244,7 +1244,7 @@ export default function App() {
 
   useEffect(() => {
     document.body.classList.remove('light-theme');
-    localStorage.removeItem('justrouter_theme');
+    try { localStorage.removeItem('justrouter_theme'); } catch {}
 
     const token = getToken();
     if (token) {

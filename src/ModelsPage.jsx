@@ -1710,7 +1710,8 @@ function ModelCard({ model, onSelect, onApiKey, active = false }) {
 function ApiKeyModal({ model, onClose }) {
   const [copied, setCopied] = useState('');
   const navigate = useNavigate();
-  const session = JSON.parse(localStorage.getItem('velorix_session') || 'null');
+  let session;
+  try { session = JSON.parse(localStorage.getItem('velorix_session') || 'null'); } catch { session = null; }
   const apiKey = session?.api_key || '';
 
   const toolType = getModelToolType(model);
