@@ -50,7 +50,7 @@ function extractGeneratedImages(message) {
 export function estimateImageCostRub(model, referenceCount = 0) {
   const base = estimateTextMessageCostRub(model);
   const extra = referenceCount > 0 ? Math.max(0.05, base * 0.5) : 0;
-  return Math.max(0.5, (base + extra) * 2);
+  return Math.max(0.5, (base + extra) * 6);
 }
 
 export async function generateOpenRouterImage({
@@ -110,7 +110,7 @@ export async function generateOpenRouterImage({
 export function imageCostRubFromUsage(model, usage) {
   const directUsd = Number(usage?.cost ?? usage?.total_cost);
   if (Number.isFinite(directUsd) && directUsd > 0) {
-    return usdToRub(applyPriceMultiplier(directUsd)) * 2;
+    return usdToRub(applyPriceMultiplier(directUsd)) * 6;
   }
   return estimateImageCostRub(model);
 }
