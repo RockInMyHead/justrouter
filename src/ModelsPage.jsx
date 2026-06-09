@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Search, Banknote, TrendingUp, Zap, Star, ChevronDown, ArrowLeft, Coins, X as XIcon, Send, ExternalLink, Clock, MessageSquare, Info, Key, Image as ImageIcon, Mic, Volume2, Square, Wand2, FileAudio, Cpu, Film } from 'lucide-react';
 import { api, isAuthError } from './api.js';
 import { getToken, clearAuth } from './auth.js';
@@ -2028,9 +2028,16 @@ export default function ModelsPage() {
   var modalInitialMessageState = useState('');
   var modalInitialMessage = modalInitialMessageState[0];
   var setModalInitialMessage = modalInitialMessageState[1];
-  var categoryState = useState('all');
+  var params = useParams();
+  var urlCategory = params.category || 'all';
+  var categoryState = useState(urlCategory);
   var category = categoryState[0];
   var setCategory = categoryState[1];
+
+  // Sync URL param → state (when user navigates back/forward)
+  useEffect(function() {
+    if (urlCategory !== category) setCategory(urlCategory);
+  }, [urlCategory]);
   var providerState = useState('Все');
   var provider = providerState[0];
   var setProvider = providerState[1];
@@ -2321,7 +2328,7 @@ export default function ModelsPage() {
               {CATEGORIES.map((cat) => (
                 <button
                   key={cat.id}
-                  onClick={() => setCategory(cat.id)}
+                  onClick={() => { setCategory(cat.id); navigate('/models/' + (cat.id === 'all' ? '' : cat.id), { replace: true }); }}
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 cursor-pointer  ${
                     category === cat.id ? 'text-white' : 'text-white/40 hover:text-white/70'
                   }`}
