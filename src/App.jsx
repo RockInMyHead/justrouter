@@ -1241,6 +1241,7 @@ function Footer() {
 
 export default function App() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [authModal, _setAuthModal] = useState(null); // 'login' | 'register' | null
   const setAuthModal = (val) => {
     _setAuthModal(val)
@@ -1276,34 +1277,12 @@ export default function App() {
     localStorage.removeItem('justrouter_theme');
 
     const token = getToken();
-    if (!token) {
-      clearAuth();
+    if (token) {
+      // Авторизованный пользователь — редирект на /models/audio
+      navigate('/models/audio', { replace: true });
       return;
     }
-
-    const cached = getSession();
-    if (cached) {
-      setUserName(cached.name || '');
-      setBalance(Number(cached.balance ?? 0));
-    }
-
-    fetchCurrentUser().then((u) => {
-      if (!u) return;
-      setUserName(u.name || '');
-      setBalance(Number(u.balance ?? 0));
-      // Fetch subscription status
-      api.getSubscriptionStatus().then(function (s) {
-        if (s?.active?.plan_type === 'tier' && s.active.tier) {
-          setSubscriptionTier(s.active.tier);
-        }
-      }).catch(function () {});
-    }).catch((e) => {
-      if (isAuthError(e)) {
-        clearAuth();
-        setUserName('');
-        setBalance(0);
-      }
-    });
+    clearAuth();
   }, []);
 
   const handleLogout = async () => {
