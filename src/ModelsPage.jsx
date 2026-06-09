@@ -2378,7 +2378,7 @@ export default function ModelsPage() {
                 if (!activeTextModel || textModels.length === 0) return null;
                 return (
                   <div className="mb-8">
-                    <div className="flex flex-col lg:flex-row gap-4 rounded-2xl overflow-hidden min-h-[400px] lg:min-h-[500px]" style={{ backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div className="flex flex-col lg:flex-row rounded-2xl overflow-hidden h-[500px]" style={{ backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
                       {/* Left: Model selection */}
                       <div className="lg:w-[240px] shrink-0 overflow-y-auto" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
                         <div className="p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
@@ -2404,8 +2404,8 @@ export default function ModelsPage() {
                         </div>
                       </div>
                       {/* Right: Chat area */}
-                      <div className="flex-1 flex flex-col min-w-0">
-                        <div className="p-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+                        <div className="p-3 shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <span className="size-2 rounded-full" style={{ backgroundColor: activeTextModel.color }} />
