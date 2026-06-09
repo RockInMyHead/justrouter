@@ -301,6 +301,14 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analyt
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_type ON analytics_events(event_type)'); } catch { /* exists */ }
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_events_path ON analytics_events(path)'); } catch { /* exists */ }
 
+// ── OAuth (Yandex, Google, Apple) ──
+try { db.exec('ALTER TABLE users ADD COLUMN oauth_yandex_id TEXT'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE users ADD COLUMN oauth_google_id TEXT'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE users ADD COLUMN oauth_apple_id TEXT'); } catch { /* exists */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_users_oauth_yandex ON users(oauth_yandex_id) WHERE oauth_yandex_id IS NOT NULL'); } catch { /* exists */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_users_oauth_google ON users(oauth_google_id) WHERE oauth_google_id IS NOT NULL'); } catch { /* exists */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_users_oauth_apple ON users(oauth_apple_id) WHERE oauth_apple_id IS NOT NULL'); } catch { /* exists */ }
+
 // Add banned column for user blocking
 try { db.exec('ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0'); } catch { /* exists */ }
 

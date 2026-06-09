@@ -668,6 +668,156 @@ app.get('/api/referrals/promo', authMiddleware, (req, res) => {
   });
 });
 
+// ── OAuth: Yandex, Google, Apple ──
+const OAUTH_CONFIG = {
+  yandex: {
+    authorizeUrl: 'https://oauth.yandex.ru/authorize',
+    tokenUrl: 'https://oauth.yandex.ru/token',
+    userInfoUrl: 'https://login.yandex.ru/info',
+    clientId: process.env.OAUTH_YANDEX_CLIENT_ID || '',
+    clientSecret: process.env.OAUTH_YANDEX_CLIENT_SECRET || '',
+    redirectUri: process.env.OAUTH_YANDEX_REDIRECT_URI || '',
+    scope: 'login:email login:info',
+    userField: 'oauth_yandex_id',
+    parseUser: (data) => ({ id: String(data.id), email: data.default_email, name: data.real_name || data.display_name || data.login }),
+  },
+  google: {
+    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+    clientId: process.env.OAUTH_GOOGLE_CLIENT_ID || '',
+    clientSecret: process.env.OAUTH_GOOGLE_CLIENT_SECRET || '',
+    redirectUri: process.env.OAUTH_GOOGLE_REDIRECT_URI || '',
+    scope: 'openid email profile',
+    userField: 'oauth_google_id',
+    parseUser: (data) => ({ id: String(data.id), email: data.email, name: data.name }),
+  },
+  apple: {
+    authorizeUrl: 'https://appleid.apple.com/auth/authorize',
+    tokenUrl: 'https://appleid.apple.com/auth/token',
+    userInfoUrl: null,
+    clientId: process.env.OAUTH_APPLE_CLIENT_ID || '',
+    clientSecret: process.env.OAUTH_APPLE_CLIENT_SECRET || '',
+    redirectUri: process.env.OAUTH_APPLE_REDIRECT_URI || '',
+    scope: 'name email',
+    userField: 'oauth_apple_id',
+    parseUser: (data) => ({ id: data.sub, email: data.email || '', name: (data.name?.firstName || '') + ' ' + (data.name?.lastName || '') || data.email?.split('@')[0] || 'User' }),
+  },
+};
+
+// Redirect to OAuth provider
+app.get('/api/auth/oauth/:provider', (req, res) => {
+  const provider = OAUTH_CONFIG[req.params.provider];
+  if (!provider) return res.status(400).json({ error: 'Unknown provider' });
+  if (!provider.clientId) return res.status(503).json({ error: 'OAuth не настроен для этого провайдера' });
+  const state = crypto.randomBytes(16).toString('hex');
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: provider.clientId,
+    redirect_uri: provider.redirectUri,
+    scope: provider.scope,
+    state,
+  });
+  res.redirect(provider.authorizeUrl + '?' + params.toString());
+});
+
+// OAuth callback
+app.get('/api/auth/oauth/:provider/callback', async (req, res) => {
+  const provider = OAUTH_CONFIG[req.params.provider];
+  if (!provider) return res.status(400).send('Unknown provider');
+  const { code, state } = req.query;
+  if (!code) return res.status(400).send('No code provided');
+
+  try {
+    // Exchange code for token
+    const tokenResponse = await undiciFetch(provider.tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: provider.clientId,
+        client_secret: provider.clientSecret,
+        redirect_uri: provider.redirectUri,
+      }).toString(),
+    });
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.access_token) {
+      return res.status(400).send('OAuth error: ' + (tokenData.error || 'no access_token'));
+    }
+
+    // Fetch user info
+    let userData = {};
+    if (provider.userInfoUrl) {
+      const userResponse = await undiciFetch(provider.userInfoUrl, {
+        headers: { Authorization: 'Bearer ' + tokenData.access_token },
+      });
+      userData = await userResponse.json();
+    } else if (tokenData.id_token) {
+      // Apple: decode id_token JWT
+      const parts = tokenData.id_token.split('.');
+      if (parts.length === 3) {
+        userData = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+      }
+    }
+
+    const oauthUser = provider.parseUser(userData);
+    if (!oauthUser.id) return res.status(400).send('Could not get user info from provider');
+
+    // Find or create user
+    const existing = db.prepare(`SELECT * FROM users WHERE ${provider.userField} = ?`).get(oauthUser.id);
+    let userId;
+    if (existing) {
+      userId = existing.id;
+    } else {
+      // Try to link by email
+      const emailUser = oauthUser.email ? db.prepare('SELECT * FROM users WHERE email = ?').get(oauthUser.email) : null;
+      if (emailUser) {
+        db.prepare(`UPDATE users SET ${provider.userField} = ? WHERE id = ?`).run(oauthUser.id, emailUser.id);
+        userId = emailUser.id;
+      } else {
+        // Create new user
+        const fakePassword = crypto.randomBytes(24).toString('hex');
+        const hashedPassword = await bcrypt.hash(fakePassword, 10);
+        const apiKey = 'jr_' + crypto.randomBytes(24).toString('hex');
+        const email = oauthUser.email || `oauth_${req.params.provider}_${oauthUser.id}@justrouter.local`;
+        const name = oauthUser.name || oauthUser.email?.split('@')[0] || 'User';
+        const result = db.prepare(`
+          INSERT INTO users (email, password, name, api_key, ${provider.userField})
+          VALUES (?, ?, ?, ?, ?)
+        `).run(email, hashedPassword, name, apiKey, oauthUser.id);
+        userId = result.lastInsertRowid;
+        ensureUserReferralCode(db, userId);
+      }
+    }
+
+    // Create session
+    const token = crypto.randomBytes(32).toString('hex');
+    db.prepare('INSERT INTO sessions (user_id, token) VALUES (?, ?)').run(userId, token);
+
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+
+    // Return HTML page that posts a message to the opener window
+    const script = `
+      <script>
+        if (window.opener) {
+          window.opener.postMessage({
+            type: 'oauth-success',
+            payload: ${JSON.stringify({ token, user: toPublicUser(db, user), referral_promo_active: isReferralPromoActive(), referral_bonus_rub: REFERRAL_BONUS_RUB })}
+          }, '*');
+          window.close();
+        } else {
+          document.write('OAuth успешен. Закройте это окно.');
+        }
+      </script>
+    `;
+    res.send('<!DOCTYPE html><html><body>' + script + '</body></html>');
+  } catch (e) {
+    console.error('[oauth] callback error:', e.message);
+    res.status(500).send('OAuth error: ' + e.message);
+  }
+});
+
 app.get('/api/auth/me', (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'Не авторизован' });

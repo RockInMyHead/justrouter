@@ -39,13 +39,13 @@ echo "🔨 Building project..."
 npm run build
 
 echo "📦 Copying files to server..."
-RSYNC_DRY_RUN=()
+RSYNC_DRY_RUN=""
 if [ "$DRY_RUN" -eq 1 ]; then
-  RSYNC_DRY_RUN=(--dry-run)
+  RSYNC_DRY_RUN="--dry-run"
 fi
 
 rsync -avz --delete \
-  "${RSYNC_DRY_RUN[@]}" \
+  $RSYNC_DRY_RUN \
   --exclude 'node_modules' \
   --exclude '.git' \
   --exclude '.env' \
