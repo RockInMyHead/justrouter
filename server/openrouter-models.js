@@ -403,7 +403,9 @@ export function parseStoredVideoMeta(raw) {
 
 export function mapOpenRouterCatalogModel(model, videoMetaById = {}) {
   const category = detectCategory(model);
-  const price = applyPriceMultiplier(modelPrice(model, videoMetaById));
+  const basePrice = applyPriceMultiplier(modelPrice(model, videoMetaById));
+  // Apply additional 6x multiplier for image models to match estimateImageCostRub
+  const price = category === 'image' ? basePrice * 6 : basePrice;
   const descriptionEn = sanitizePublicText(model.description);
   const descriptionRu = sanitizePublicText(RU_DESCRIPTION_OVERRIDES[model.id] || descriptionEn);
   return {
