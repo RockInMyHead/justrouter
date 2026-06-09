@@ -179,74 +179,375 @@ function TextChatTool({ model, messages, input, setInput, freeRequests, loading,
 }
 
 function TtsTool({ model }) {
-  const [text, setText] = useState('Привет! Это пример озвучки текста через JustRouter.');
-  const [voiceName, setVoiceName] = useState('');
-  const [voices, setVoices] = useState([]);
+  const [text, setText] = useState('');
+  const [voice, setVoice] = useState('alloy');
+  const [speed, setSpeed] = useState(1.0);
+  const [format] = useState('wav');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [audioUrl, setAudioUrl] = useState(null);
+  const [audioBlob, setAudioBlob] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [transcript, setTranscript] = useState('');
+  const [balance, setBalance] = useState(0);
+  const [audioModels, setAudioModels] = useState([]);
+  const [selectedModelId, setSelectedModelId] = useState(model?.id || '');
+  const [activeTab, setActiveTab] = useState('generate'); // 'generate' | 'history' | 'settings'
+  const audioRef = useRef(null);
 
-  useEffect(() => {
-    const loadVoices = () => {
-      const availableVoices = window.speechSynthesis?.getVoices?.() || [];
-      setVoices(availableVoices);
-      if (!voiceName && availableVoices[0]) setVoiceName(availableVoices[0].name);
+  const VOICES = [
+    { id: 'alloy', label: 'Alloy', desc: 'Нейтральный, сбалансированный' },
+    { id: 'echo', label: 'Echo', desc: 'Глубокий, низкий голос' },
+    { id: 'fable', label: 'Fable', desc: 'Мягкий, повествовательный' },
+    { id: 'onyx', label: 'Onyx', desc: 'Сильный, уверенный' },
+    { id: 'nova', label: 'Nova', desc: 'Тёплый, женственный' },
+    { id: 'shimmer', label: 'Shimmer', desc: 'Чистый, ясный' },
+  ];
+
+  const PRESETS = [
+    { label: 'Начните с', text: 'Изучите технологию искусственного интеллекта' },
+    { label: 'Откройте для себя свой голос', text: 'Ваш уникальный голос — это ключ к самовыражению в мире технологий' },
+    { label: 'Неконтролируемо смеяться', text: 'Представьте, что вы смеётесь без остановки, и это самый заразительный смех в мире' },
+    { label: 'Построить диалог', text: '— Привет! Как дела? — Отлично! А у тебя? — Тоже хорошо, спасибо!' },
+    { label: 'Вспомните призрачное воспоминание', text: 'Это было так давно, что кажется, будто это случилось не со мной, а с кем-то другим' },
+    { label: 'Перекрытие речи', text: 'Подожди, дай я договорю... Нет, теперь моя очередь! В общем, мы пришли к выводу что...' },
+  ];
+
+  // Load audio models
+  useEffect(function() {
+    if (!model) return;
+    api.getModels({ category: 'audio' }).then(function(m) {
+      var ttsModels = m.filter(function(x) { return !x.id.includes('whisper'); });
+      setAudioModels(ttsModels);
+      if (!selectedModelId && ttsModels.length > 0) setSelectedModelId(ttsModels[0].id);
+    }).catch(function() {});
+    var s = JSON.parse(localStorage.getItem('velorix_session') || 'null');
+    if (s) setBalance(s.balance);
+    // Load history from localStorage
+    try {
+      var h = JSON.parse(localStorage.getItem('velorix_tts_history') || '[]');
+      setHistory(h);
+    } catch {}
+  }, [model]);
+
+  // Clean up audio URL on unmount
+  useEffect(function() {
+    return function() {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
     };
+  }, [audioUrl]);
 
-    loadVoices();
-    window.speechSynthesis?.addEventListener?.('voiceschanged', loadVoices);
-    return () => window.speechSynthesis?.removeEventListener?.('voiceschanged', loadVoices);
-  }, [voiceName]);
+  var currentModel = audioModels.find(function(m) { return m.id === selectedModelId; }) || model;
 
-  const speak = () => {
-    if (!text.trim() || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text.trim());
-    const selectedVoice = voices.find((voice) => voice.name === voiceName);
-    if (selectedVoice) utterance.voice = selectedVoice;
-    window.speechSynthesis.speak(utterance);
+  function handleGenerate() {
+    var t = text.trim();
+    if (!t) {
+      setError('Введите текст для озвучки');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    setAudioUrl(null);
+    setAudioBlob(null);
+    setTranscript('');
+
+    api.generateAudio({ model_id: selectedModelId, prompt: t, voice: voice }).then(function(res) {
+      if (res.error) { setError(res.error); return; }
+      if (res.audio) {
+        // Decode base64 audio
+        try {
+          var binaryStr = atob(res.audio);
+          var bytes = new Uint8Array(binaryStr.length);
+          for (var i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+          var blob = new Blob([bytes], { type: 'audio/' + (res.format || 'wav') });
+          var url = URL.createObjectURL(blob);
+          setAudioUrl(url);
+          setAudioBlob(blob);
+          if (res.transcript) setTranscript(res.transcript);
+          if (res.balance != null) {
+            setBalance(res.balance);
+            try {
+              var sess = JSON.parse(localStorage.getItem('velorix_session') || '{}');
+              sess.balance = res.balance;
+              localStorage.setItem('velorix_session', JSON.stringify(sess));
+            } catch {}
+          }
+          // Add to history
+          var entry = { text: t, voice: voice, model: selectedModelId, transcript: res.transcript || '', timestamp: Date.now(), cost: res.cost || 0 };
+          var h2 = [entry].concat(history).slice(0, 50);
+          setHistory(h2);
+          try { localStorage.setItem('velorix_tts_history', JSON.stringify(h2)); } catch {}
+          // Auto-play
+          setTimeout(function() { if (audioRef.current) { audioRef.current.play().catch(function() {}); } }, 100);
+        } catch (e) {
+          setError('Ошибка декодирования аудио');
+        }
+      }
+    }).catch(function(err) {
+      setError(err.message || 'Ошибка генерации аудио');
+    }).finally(function() {
+      setLoading(false);
+    });
+  }
+
+  function playFromHistory(entry) {
+    setText(entry.text);
+    setVoice(entry.voice);
+    handleGenerate();
+  }
+
+  function downloadAudio() {
+    if (!audioBlob) return;
+    var a = document.createElement('a');
+    a.href = audioUrl;
+    a.download = 'tts-' + Date.now() + '.' + (format === 'mp3' ? 'mp3' : 'wav');
+    a.click();
+  }
+
+  function formatDate(ts) {
+    try { return new Date(ts).toLocaleString('ru-RU', { hour: '2-digit', minute: '2-digit' }); } catch { return ''; }
+  }
+
+  var GLASS_BORDER = '1px solid rgba(255,255,255,0.06)';
+  var GLASS_BG = 'rgba(255,255,255,0.02)';
+  var INPUT_STYLE = {
+    width: '100%',
+    background: 'rgba(255,255,255,0.03)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: '12px',
+    padding: '10px 14px',
+    color: 'white',
+    fontSize: '14px',
+    outline: 'none',
+    fontFamily: 'monospace',
   };
 
   return (
-    <div className="flex-1 p-5 sm:p-6 overflow-y-auto">
-      <div className="max-w-2xl mx-auto space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="size-12 rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${model.color}15` }}>
-            <Volume2 size={22} style={{ color: model.color }} />
-          </div>
-          <div>
-            <h3 className="text-white font-semibold">Озвучка текста</h3>
-            <p className="text-white/40 text-xs">Введите текст, выберите голос и прослушайте результат.</p>
-          </div>
+    <div className="flex-1 overflow-y-auto p-3 sm:p-5">
+      <div className="max-w-4xl mx-auto">
+        {/* Header tabs */}
+        <div className="flex items-center gap-1 mb-5 pb-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          {[
+            { id: 'generate', label: 'Текст в речь' },
+            { id: 'history', label: 'История' },
+            { id: 'settings', label: 'Настройки' },
+          ].map(function(t) {
+            return (
+              <button key={t.id} onClick={function() { setActiveTab(t.id); }}
+                className={'px-4 py-2 rounded-xl text-xs font-mono transition-all cursor-pointer ' + (activeTab === t.id ? 'text-white' : 'text-white/40 hover:text-white/70')}
+                style={{ backgroundColor: activeTab === t.id ? 'rgba(255,255,255,0.06)' : 'transparent' }}>
+                {t.label}
+              </button>
+            );
+          })}
+          <div className="flex-1" />
+          <div className="text-xs font-mono text-white/30">{balance.toFixed(2)} ₽</div>
         </div>
 
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          className="w-full min-h-40 rounded-2xl p-4 text-white text-sm placeholder-white/20 outline-none resize-none"
-          style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
-          placeholder="Текст для озвучки..."
-        />
+        {activeTab === 'generate' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Left column: Text input + presets */}
+            <div className="lg:col-span-2 space-y-4">
+              {/* Text area */}
+              <div className="rounded-2xl p-4" style={{ backgroundColor: GLASS_BG, border: GLASS_BORDER }}>
+                <textarea
+                  value={text}
+                  onChange={function(e) { setText(e.target.value); }}
+                  placeholder="Введите текст для озвучки..."
+                  className="w-full min-h-[180px] bg-transparent text-white text-sm placeholder-white/20 outline-none resize-none font-mono leading-relaxed"
+                  style={{ fontFamily: 'monospace' }}
+                />
+                <div className="flex items-center justify-between pt-2 mt-2" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                  <span className="text-xs font-mono text-white/20">{text.length} симв.</span>
+                  <button onClick={function() { setText(''); }}
+                    className="text-xs font-mono text-white/20 hover:text-white/50 transition-colors cursor-pointer">Очистить</button>
+                </div>
+              </div>
 
-        <select
-          value={voiceName}
-          onChange={(e) => setVoiceName(e.target.value)}
-          className="w-full rounded-xl px-4 py-2.5 text-white text-sm outline-none"
-          style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
-        >
-          {voices.map((voice) => (
-            <option key={voice.name} value={voice.name} style={{ backgroundColor: '#111' }}>
-              {voice.name} {voice.lang ? `(${voice.lang})` : ''}
-            </option>
-          ))}
-        </select>
+              {/* Presets / Templates */}
+              <div>
+                <div className="text-xs font-mono text-white/30 mb-2">Быстрые шаблоны</div>
+                <div className="flex flex-wrap gap-2">
+                  {PRESETS.map(function(p) {
+                    return (
+                      <button key={p.label} onClick={function() { setText(p.text); }}
+                        className="px-3 py-2 rounded-xl text-xs font-mono transition-all cursor-pointer text-left max-w-[220px]"
+                        style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: GLASS_BORDER, color: 'rgba(255,255,255,0.6)' }}
+                        onMouseOver={function(e) { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)'; }}
+                        onMouseOut={function(e) { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.03)'; }}>
+                        <div className="text-white/80 text-xs mb-0.5">{p.label}</div>
+                        <div className="text-[10px] text-white/30 truncate">{p.text.slice(0, 50)}...</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
-        <div className="flex gap-2">
-          <button onClick={speak} className="flex-1 py-3 rounded-xl text-sm font-semibold transition-opacity hover:opacity-85" style={{ backgroundColor: `${model.color}22`, color: model.color }}>
-            <Volume2 size={16} className="inline mr-2" />
-            Озвучить
-          </button>
-          <button onClick={() => window.speechSynthesis?.cancel()} className="px-4 py-3 rounded-xl text-white/70 text-sm" style={{ backgroundColor: 'rgba(255,255,255,0.06)' }}>
-            Стоп
-          </button>
-        </div>
+              {/* Voice selector */}
+              <div>
+                <div className="text-xs font-mono text-white/30 mb-2">Голос</div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {VOICES.map(function(v) {
+                    var active = voice === v.id;
+                    return (
+                      <button key={v.id} onClick={function() { setVoice(v.id); }}
+                        className={'px-3 py-2.5 rounded-xl text-xs font-mono transition-all text-left cursor-pointer ' + (active ? 'text-white' : 'text-white/50 hover:text-white/70')}
+                        style={{
+                          backgroundColor: active ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.02)',
+                          border: active ? '1px solid rgba(255,255,255,0.15)' : GLASS_BORDER,
+                        }}>
+                        <div className="font-semibold">{v.label}</div>
+                        <div className="text-[10px] text-white/30 mt-0.5">{v.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Right column: Controls */}
+            <div className="space-y-4">
+              {/* Model selector */}
+              <div className="rounded-2xl p-4" style={{ backgroundColor: GLASS_BG, border: GLASS_BORDER }}>
+                <div className="text-xs font-mono text-white/30 mb-2">Модель</div>
+                <select value={selectedModelId} onChange={function(e) { setSelectedModelId(e.target.value); }}
+                  className="w-full rounded-xl px-3 py-2 text-white text-xs font-mono outline-none cursor-pointer mb-3"
+                  style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: GLASS_BORDER }}>
+                  {audioModels.map(function(m) {
+                    return <option key={m.id} value={m.id} style={{ backgroundColor: '#111' }}>{m.name}</option>;
+                  })}
+                </select>
+
+                <div className="text-xs font-mono text-white/30 mb-2">Скорость</div>
+                <input type="range" min="0.5" max="2.0" step="0.1" value={speed}
+                  onChange={function(e) { setSpeed(Number(e.target.value)); }}
+                  className="w-full h-1 appearance-none rounded-full cursor-pointer mb-2"
+                  style={{ accentColor: 'white', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                <div className="flex justify-between text-[10px] font-mono text-white/20">
+                  <span>0.5x</span>
+                  <span className="text-white/40">{speed.toFixed(1)}x</span>
+                  <span>2.0x</span>
+                </div>
+              </div>
+
+              {/* Format info */}
+              <div className="rounded-2xl p-4" style={{ backgroundColor: GLASS_BG, border: GLASS_BORDER }}>
+                <div className="text-xs font-mono text-white/30 mb-1">Формат вывода</div>
+                <div className="text-white/70 text-xs font-mono">WAV</div>
+                <div className="text-[10px] text-white/20 mt-1">Высокое качество, без потерь</div>
+              </div>
+
+              {/* Generate button */}
+              <button onClick={handleGenerate} disabled={loading || !text.trim()}
+                className="w-full py-3.5 rounded-2xl text-sm font-semibold transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                style={{
+                  background: loading ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.12) 100%)',
+                  color: 'white',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                }}>
+                {loading ? 'Генерация...' : (audioUrl ? 'Сгенерировать ещё' : 'Сгенерировать')}
+              </button>
+
+              {/* Error */}
+              {error && (
+                <div className="text-xs font-mono text-red-400 px-3 py-2 rounded-xl text-center"
+                  style={{ backgroundColor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.12)' }}>
+                  {error}
+                </div>
+              )}
+
+              {/* Audio player */}
+              {audioUrl && (
+                <div className="rounded-2xl p-4 space-y-3" style={{ backgroundColor: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.12)' }}>
+                  <audio ref={audioRef} src={audioUrl} controls className="w-full h-10" style={{ borderRadius: '8px' }} />
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-mono text-white/40">
+                      {transcript && <span className="text-white/60">{transcript.slice(0, 60)}{transcript.length > 60 ? '...' : ''}</span>}
+                    </div>
+                    <button onClick={downloadAudio}
+                      className="text-xs font-mono text-white/40 hover:text-white/70 transition-colors cursor-pointer flex items-center gap-1">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      Скачать
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* History tab */}
+        {activeTab === 'history' && (
+          <div className="space-y-2">
+            {history.length === 0 ? (
+              <div className="text-center py-12">
+                <Volume2 size={32} className="mx-auto text-white/10 mb-3" />
+                <p className="text-white/20 text-xs font-mono">История пуста</p>
+                <p className="text-white/10 text-xs font-mono mt-1">Сгенерируйте первый аудиофайл</p>
+              </div>
+            ) : (
+              history.map(function(entry, idx) {
+                return (
+                  <div key={idx}
+                    className="flex items-center justify-between px-4 py-3 rounded-2xl transition-all cursor-pointer hover:bg-white/[0.02]"
+                    style={{ border: GLASS_BORDER }}
+                    onClick={function() { playFromHistory(entry); }}>
+                    <div className="min-w-0 flex-1 mr-3">
+                      <div className="text-white/70 text-sm truncate">{entry.text.slice(0, 80)}{entry.text.length > 80 ? '...' : ''}</div>
+                      <div className="text-white/30 text-xs font-mono mt-0.5">
+                        {VOICES.find(function(v) { return v.id === entry.voice; })?.label || entry.voice} · {formatDate(entry.timestamp)}
+                        {entry.cost > 0 && <span> · {entry.cost.toFixed(2)} ₽</span>}
+                      </div>
+                    </div>
+                    <button onClick={function(e) { e.stopPropagation(); playFromHistory(entry); }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-mono text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors cursor-pointer shrink-0">
+                      <Volume2 size={12} className="inline mr-1" />Воспр.
+                    </button>
+                  </div>
+                );
+              })
+            )}
+            {history.length > 0 && (
+              <div className="text-center pt-2">
+                <button onClick={function() { setHistory([]); try { localStorage.removeItem('velorix_tts_history'); } catch {} }}
+                  className="text-xs font-mono text-white/20 hover:text-red-400 transition-colors cursor-pointer">Очистить историю</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Settings tab */}
+        {activeTab === 'settings' && (
+          <div className="max-w-lg space-y-4">
+            <div className="rounded-2xl p-5" style={{ backgroundColor: GLASS_BG, border: GLASS_BORDER }}>
+              <h4 className="text-white/80 text-sm font-medium mb-4">Настройки озвучки</h4>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-white/40 text-xs font-mono block mb-1.5">Скорость речи</label>
+                  <input type="range" min="0.5" max="2.0" step="0.1" value={speed}
+                    onChange={function(e) { setSpeed(Number(e.target.value)); }}
+                    className="w-full h-1 appearance-none rounded-full cursor-pointer"
+                    style={{ accentColor: 'white', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                  <div className="flex justify-between text-[10px] font-mono text-white/20 mt-1">
+                    <span>Медленно (0.5x)</span>
+                    <span className="text-white/40">{speed.toFixed(1)}x</span>
+                    <span>Быстро (2.0x)</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-white/40 text-xs font-mono block mb-1.5">Голос по умолчанию</label>
+                  <select value={voice} onChange={function(e) { setVoice(e.target.value); }}
+                    className="w-full rounded-xl px-3 py-2 text-white text-xs font-mono outline-none cursor-pointer"
+                    style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: GLASS_BORDER }}>
+                    {VOICES.map(function(v) {
+                      return <option key={v.id} value={v.id} style={{ backgroundColor: '#111' }}>{v.label} — {v.desc}</option>;
+                    })}
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1763,14 +2064,17 @@ export default function ModelsPage() {
         {/* Chat composer + grid */}
         <div className="px-5 sm:px-8 md:pl-6 py-8">
           <div className="max-w-7xl mx-auto">
-            {category === 'image' || category === 'video' ? (function() {
+            {category === 'image' || category === 'video' || category === 'audio' ? (function() {
               var catModels = models.filter(function(m) { return m.category === category; }).sort(function(a, b) { return a.price - b.price; });
-              var active = catModels.find(function(m) { return m.id === (category === 'image' ? imageToolModelId : videoToolModelId); }) || catModels[0] || null;
+              var active = catModels.find(function(m) { return m.id === (category === 'image' ? imageToolModelId : category === 'video' ? videoToolModelId : ''); }) || catModels[0] || null;
               if (!active) return null;
               if (category === 'image') {
                 return <ImageTool model={active} balance={balance} onBalanceChange={setBalance} onLoginRequired={function() { navigate('/', { state: { auth: 'login' } }); }} />;
               }
-              return <VideoTool model={active} balance={balance} onBalanceChange={setBalance} onLoginRequired={function() { navigate('/', { state: { auth: 'login' } }); }} />;
+              if (category === 'video') {
+                return <VideoTool model={active} balance={balance} onBalanceChange={setBalance} onLoginRequired={function() { navigate('/', { state: { auth: 'login' } }); }} />;
+              }
+              return <TtsTool model={active} />;
             })() : (
             <div className="mb-8">
               <ChatComposer

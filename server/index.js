@@ -2336,12 +2336,74 @@ app.post('/api/audio', mediaRateLimit, authMiddleware, requireJsonFields(['model
       body: JSON.stringify({
         model: mapOpenRouterModel(model_id),
         modalities: ['text', 'audio'],
-        audio: { voice, format: 'wav' },
+        audio: { voice, format: 'pcm16' },
+        stream: true,
         messages: [{ role: 'user', content: prompt.trim() }],
       }),
     });
 
-    const data = await response.json().catch(() => ({}));
+    const contentType = response.headers.get('content-type') || '';
+    let data;
+
+    if (contentType.includes('text/event-stream')) {
+      // Collect SSE stream chunks using ReadableStream reader
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalData = null;
+
+      function readChunk() {
+        return reader.read().then(function(result) {
+          if (result.done) return;
+          buffer += decoder.decode(result.value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const jsonStr = line.slice(6).trim();
+              if (jsonStr === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(jsonStr);
+                if (parsed.choices?.[0]?.delta?.audio?.data) {
+                  if (!finalData) finalData = parsed;
+                  else {
+                    finalData.choices[0].delta.audio.data += parsed.choices[0].delta.audio.data;
+                    if (parsed.choices[0].delta.audio.transcript) {
+                      finalData.choices[0].delta.audio.transcript = parsed.choices[0].delta.audio.transcript;
+                    }
+                    if (parsed.choices[0].delta?.content) {
+                      if (!finalData.choices[0].delta.content) finalData.choices[0].delta.content = '';
+                      finalData.choices[0].delta.content += parsed.choices[0].delta.content;
+                    }
+                  }
+                }
+              } catch {}
+            }
+          }
+          return readChunk();
+        });
+      }
+      await readChunk();
+
+      if (finalData?.choices?.[0]?.delta) {
+        data = {
+          choices: [{
+            message: {
+              audio: {
+                data: finalData.choices[0].delta.audio?.data || null,
+                transcript: finalData.choices[0].delta.audio?.transcript || null,
+              },
+              content: finalData.choices[0].delta?.content || null,
+            },
+          }],
+          usage: finalData.usage || {},
+        };
+      } else {
+        throw new Error('Модель не вернула аудио в stream-режиме');
+      }
+    } else {
+      data = await response.json().catch(() => ({}));
+    }
     if (!response.ok) {
       throw new Error(formatOpenRouterClientError(
         data?.error?.message || data?.message || 'Не удалось получить ответ от модели',
@@ -2354,6 +2416,38 @@ app.post('/api/audio', mediaRateLimit, authMiddleware, requireJsonFields(['model
     if (!audioData) {
       throw new Error('Модель не вернула аудио');
     }
+
+    // Convert PCM16 to WAV (add WAV header) for browser playback
+    function pcm16ToWav(base64Pcm16) {
+      const raw = Buffer.from(base64Pcm16, 'base64');
+      const numChannels = 1;
+      const sampleRate = 24000;
+      const bitsPerSample = 16;
+      const dataSize = raw.length;
+      const headerSize = 44;
+      const totalSize = headerSize + dataSize;
+      const wav = Buffer.alloc(totalSize);
+      // RIFF header
+      wav.write('RIFF', 0);
+      wav.writeUInt32LE(totalSize - 8, 4);
+      wav.write('WAVE', 8);
+      // fmt chunk
+      wav.write('fmt ', 12);
+      wav.writeUInt32LE(16, 16); // chunk size
+      wav.writeUInt16LE(1, 20); // PCM format
+      wav.writeUInt16LE(numChannels, 22);
+      wav.writeUInt32LE(sampleRate, 24);
+      wav.writeUInt32LE(sampleRate * numChannels * bitsPerSample / 8, 28); // byte rate
+      wav.writeUInt16LE(numChannels * bitsPerSample / 8, 32); // block align
+      wav.writeUInt16LE(bitsPerSample, 34);
+      // data chunk
+      wav.write('data', 36);
+      wav.writeUInt32LE(dataSize, 40);
+      raw.copy(wav, 44);
+      return wav.toString('base64');
+    }
+
+    const wavBase64 = pcm16ToWav(audioData);
 
     const costRub = costRubFromOpenRouterUsage(model, data.usage || {});
 
@@ -2376,7 +2470,7 @@ app.post('/api/audio', mediaRateLimit, authMiddleware, requireJsonFields(['model
     void maybeNotifyLowBalance(req.user.id, balance);
 
     res.json({
-      audio: audioData,
+      audio: wavBase64,
       format: 'wav',
       transcript: transcript || null,
       text: text || null,
